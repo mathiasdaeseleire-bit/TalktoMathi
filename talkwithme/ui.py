@@ -337,6 +337,7 @@ class ReportTab:
 
         self._build_cubes(body)
         self._build_compare(body)
+        self._build_quota(body)
         self._build_latency(body)
         self._build_week(body)
         self._build_channels(body)
@@ -377,6 +378,54 @@ class ReportTab:
                           fg=theme.TEXT_FAINT, bg=theme.SURFACE)
             note.pack(anchor="w", pady=(3, 0))
             self.cubes[key] = (value, note)
+
+    def _build_quota(self, body: tk.Misc) -> None:
+        """Only rendered when the key may read it; a key scoped to
+        speech-to-text alone cannot, and an empty row beats an error."""
+        self.quota_card = card(body)
+        self.quota_inner = tk.Frame(self.quota_card, bg=theme.SURFACE)
+        self.quota_inner.pack(fill="x", padx=theme.CARD_PAD, pady=16)
+
+        left = tk.Frame(self.quota_inner, bg=theme.SURFACE)
+        left.pack(side="left", fill="x", expand=True)
+        caps(left, "Tegoed bij ElevenLabs", bg=theme.SURFACE).pack(anchor="w")
+        self.quota_value = label(left, "", font=theme.FONT_SECTION, bg=theme.SURFACE)
+        self.quota_value.pack(anchor="w", pady=(6, 0))
+        self.quota_note = label(left, "", font=theme.FONT_UI_TINY,
+                                 fg=theme.TEXT_FAINT, bg=theme.SURFACE)
+        self.quota_note.pack(anchor="w", pady=(3, 0))
+
+        self.quota_bar = tk.Canvas(self.quota_inner, height=8, width=220,
+                                    bg=theme.SURFACE, highlightthickness=0, bd=0)
+        self.quota_bar.pack(side="right", padx=(20, 0))
+
+    def _refresh_quota(self) -> None:
+        from . import quota as quota_mod
+        from . import secrets_store
+
+        left = quota_mod.fetch_or_none(secrets_store.get_elevenlabs_api_key())
+        if left is None:
+            self.quota_card.pack_forget()
+            return
+        self.quota_card.pack(fill="x", pady=(theme.GAP_L, 0), before=self.compare)
+
+        self.quota_value.configure(
+            text=f"{left.summary()}  ·  ongeveer {left.estimated_minutes:.0f} min",
+            fg=theme.RED if left.is_low else theme.TEXT)
+        bits = [f"tier: {left.tier}"]
+        if left.reset_text():
+            bits.append(left.reset_text())
+        bits.append("minuten zijn een schatting")
+        self.quota_note.configure(text="  ·  ".join(bits))
+
+        c = self.quota_bar
+        c.delete("all")
+        w = int(c.cget("width"))
+        c.create_polygon(theme.round_rect_points(0, 1, w, 7, 3), smooth=True,
+                          fill=theme.mix(theme.BG, theme.BORDER, 0.6), outline="")
+        filled = max(4, w * left.fraction_used)
+        c.create_polygon(theme.round_rect_points(0, 1, filled, 7, 3), smooth=True,
+                          fill=theme.RED if left.is_low else theme.ACCENT, outline="")
 
     def _build_compare(self, body: tk.Misc) -> None:
         caps(body, "Typen versus spreken").pack(anchor="w", pady=(theme.GAP_L, 10))
@@ -478,6 +527,7 @@ class ReportTab:
                  f"onbruikbaar maken.")
 
         self._fill_channels()
+        self._refresh_quota()
         self._draw_compare()
         self._draw_latency()
         self._draw_chart()

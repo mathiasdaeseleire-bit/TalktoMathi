@@ -3,6 +3,22 @@
 Versienummers volgen de tag van de GitHub-release. De app vergelijkt de
 nieuwste tag met `__version__` in `talkwithme/__init__.py`.
 
+## 0.5.0
+
+**Resterend tegoed zichtbaar.** Het weekrapport toont hoeveel credits er nog
+bij ElevenLabs staan, met een schatting in minuten transcriptie en wanneer
+het tegoed vernieuwt. Start je een vergadering terwijl er minder dan 15%
+over is, dan waarschuwt de app eerst — een uur opnemen kan een gratis
+tegoed in één keer opsouperen, en dat merk je liever vooraf dan achteraf.
+
+De minuten zijn nadrukkelijk een schatting: ElevenLabs publiceert geen
+vaste verhouding tussen credits en seconden audio, dus die wordt afgeleid
+en ook zo benoemd.
+
+Kan de key het verbruik niet lezen, dan blijft het blok gewoon weg. Een
+API-key die alleen spraak-naar-tekst mag, werkt prima om te dicteren maar
+krijgt hier een 401; dat is geen fout om over te klagen.
+
 ## 0.4.0
 
 **Streaming transcriptie.** De audio wordt nu verstuurd terwijl je praat in

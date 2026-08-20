@@ -29,6 +29,7 @@ from . import paste
 from . import meetings as meetings_mod
 from . import permissions
 from . import postprocess
+from . import quota as quota_mod
 from . import realtime as realtime_mod
 from . import secrets_store
 from . import single_instance
@@ -558,6 +559,12 @@ class App:
             log.exception("kon vergaderopname niet starten")
             notify.notify("TalkWithMe", f"Opname starten mislukt: {e}")
             return
+        left = quota_mod.fetch_or_none(secrets_store.get_elevenlabs_api_key())
+        if left is not None and left.is_low:
+            notify.notify("TalkWithMe",
+                           f"Let op: nog {left.estimated_minutes:.0f} minuten "
+                           f"transcriptie over ({left.reset_text()}).")
+
         self.indicator.show_meeting()
         self.tray.set_state("meeting")
         both = self.meeting_recorder.system_audio
