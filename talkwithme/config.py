@@ -18,7 +18,12 @@ LOG_PATH = os.path.join(APP_DIR, "talkwithme.log")
 
 DEFAULTS = {
     "max_duration_s": 300,
-    "language": "auto",
+    # Streaming transcription decides the language per short fragment
+    # rather than over a whole recording, so "auto" misfires on brief
+    # utterances — a two-word Dutch sentence came back as Bulgarian.
+    # Naming the language is far more reliable; English words inside
+    # Dutch speech still transcribe correctly.
+    "language": "nl",
     "stt_model": "scribe_v2",
     "cleanup_model": "gemini-flash-lite-latest",
     "cleanup_enabled": True,

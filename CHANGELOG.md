@@ -3,6 +3,20 @@
 Versienummers volgen de tag van de GitHub-release. De app vergelijkt de
 nieuwste tag met `__version__` in `talkwithme/__init__.py`.
 
+## 0.5.1
+
+**Opgelost: verkeerde taal in de transcriptie.** Sinds de overstap naar
+streaming stond de taal op automatisch, en die keuze wordt per kort
+fragment gemaakt in plaats van over de hele opname. Een korte Nederlandse
+zin kwam daardoor terug in het Bulgaars. De taal staat nu standaard op
+Nederlands en is instelbaar; Engelse woorden in een Nederlandse zin
+blijven gewoon staan.
+
+**Resterend tegoed na het spreken.** Beweeg over het systeemvakicoon en je
+ziet hoeveel minuten je nog kunt spreken. Dat cijfer wordt na elk dictaat
+ververst. Een melding komt er alleen wanneer het tegoed echt bijna op is,
+en dan eenmalig.
+
 ## 0.5.0
 
 **Resterend tegoed zichtbaar.** Het weekrapport toont hoeveel credits er nog

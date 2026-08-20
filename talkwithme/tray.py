@@ -30,6 +30,8 @@ class TrayApp:
                  is_meeting=None):
         self._icons = {state: make_icon(state) for state in TITLES}
         self._on_quit = on_quit
+        self._state = "idle"
+        self._hint = ""
 
         menu = pystray.Menu(
             # default=True: a plain click on the tray icon opens history,
@@ -66,10 +68,17 @@ class TrayApp:
         finally:
             icon.stop()
 
+    def set_hint(self, text: str) -> None:
+        """Extra line in the tooltip, e.g. the remaining allowance."""
+        self._hint = text or ""
+        self.set_state(self._state)
+
     def set_state(self, name: str) -> None:
+        self._state = name
         try:
             self.icon.icon = self._icons.get(name, self._icons["idle"])
-            self.icon.title = TITLES.get(name, TITLES["idle"])
+            title = TITLES.get(name, TITLES["idle"])
+            self.icon.title = (title + chr(10) + self._hint) if self._hint else title
         except Exception as e:
             log.debug("kon tray-status niet zetten: %s", e)
 

@@ -1059,6 +1059,25 @@ class SettingsTab:
 
         self._divider(body)
 
+        # --- language --------------------------------------------------
+        caps(body, "Taal").pack(anchor="w")
+        label(body,
+               "Automatisch werkt slecht bij korte zinnen: de transcriptie kiest per"
+               "\nfragment een taal en kan er dan naast zitten. Engelse woorden in een"
+               "\nNederlandse zin blijven gewoon staan.",
+               font=theme.FONT_UI_SMALL, fg=theme.TEXT_MUTED).pack(anchor="w", pady=(4, 8))
+        self._language_codes = ["nl", "en", "fr", "de", "es", "auto"]
+        labels = ["Nederlands", "Engels", "Frans", "Duits", "Spaans",
+                   "Automatisch (afgeraden)"]
+        self.language_combo = ttk.Combobox(body, state="readonly", width=30,
+                                            values=labels)
+        current = getattr(config, "language", "nl")
+        self.language_combo.current(self._language_codes.index(current)
+                                     if current in self._language_codes else 0)
+        self.language_combo.pack(anchor="w")
+
+        self._divider(body)
+
         # --- cleanup ------------------------------------------------
         self._divider(body)
 
@@ -1220,6 +1239,9 @@ class SettingsTab:
             instructions = self.text.get("1.0", "end").strip() or prompts.DEFAULT_CLEANUP
             self._stash_tone_text()
             self.config.update_check_enabled = self.update_check_var.get()
+            index = self.language_combo.current()
+            if index >= 0:
+                self.config.language = self._language_codes[index]
             self.on_save(self.cleanup_var.get(), instructions,
                           self.tone_var.get(), dict(self._tone_edits),
                           self.repo_var.get())

@@ -93,6 +93,7 @@ class App:
         # row is a broken microphone, not a quiet user, and it is worth
         # saying so with the fix attached.
         self._silent_streak = 0
+        self._warned_low_quota = False
         self._build_clients()
 
         self.root = tk.Tk()
@@ -493,6 +494,7 @@ class App:
         log.info("tekst: %r", final_text)
 
         delivery = self._deliver(final_text)
+        self._refresh_quota_hint()
         history_mod.add(raw_text, final_text, self.ctx_exe or self.ctx_title,
                          cleaned_applied, tone if cleaned_applied else None,
                          record_s=len(audio) / self.recorder.rate,
@@ -652,6 +654,25 @@ class App:
                 self.tray.set_state("idle")
 
         threading.Thread(target=work, name="meeting-notes", daemon=True).start()
+
+
+    def _refresh_quota_hint(self) -> None:
+        """Put the remaining allowance in the tray tooltip after a
+        dictation. A notification every time would be noise; hovering the
+        icon is there exactly for the question "how much have I left".
+        Warn out loud only when it is nearly gone."""
+        def work():
+            left = quota_mod.fetch_or_none(secrets_store.get_elevenlabs_api_key())
+            if left is None:
+                return
+            self.tray.set_hint(f"nog ~{left.estimated_minutes:.0f} min spreken")
+            if left.is_low and not self._warned_low_quota:
+                self._warned_low_quota = True
+                notify.notify("TalkWithMe",
+                               f"Nog ongeveer {left.estimated_minutes:.0f} minuten "
+                               f"transcriptie over ({left.reset_text()}).")
+
+        threading.Thread(target=work, name="quota", daemon=True).start()
 
     # ---- monitor / prewarm -----------------------------------------
 
