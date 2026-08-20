@@ -95,6 +95,7 @@ class App:
         self._build_clients()
 
         self.root = tk.Tk()
+        self.root.title("TalkWithMe")
         self.root.withdraw()  # no main window; tray + popups only
         self._apply_window_icon()
         self.indicator = Indicator(

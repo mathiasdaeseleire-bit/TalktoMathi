@@ -19,23 +19,52 @@ from .icon import save_ico
 log = logging.getLogger("talkwithme.install")
 
 APP_NAME = "TalkWithMe"
-def _local_appdata() -> str:
-    bs = chr(92)
-    r"""The user's real AppData\\Local.
+def _install_root() -> str:
+    r"""Where to put the exe so that Windows can actually find it.
 
-    Running inside a packaged (MSIX) host redirects writes to
-    ...\Packages\<app>\LocalCache\Local, and a shortcut created there
-    records that path. It resolves for the packaged process and for nobody
-    else, so a pinned icon ends up blank. Building the path from the user
-    profile avoids inheriting that redirection.
+    Installing from inside a packaged (MSIX) host is the trap here. Such a
+    host redirects writes under AppData\Local into
+    ...\Packages\<app>\LocalCache, and the write appears to succeed: the
+    installer reads its own file back happily. Explorer, outside the
+    container, sees nothing there. The shortcut then resolves to a missing
+    target and shows a blank document icon.
+
+    Detecting the redirection is done by writing a probe and looking for a
+    copy of it in the package cache, because the path string itself does
+    not change. When redirected, fall back to a folder under the user
+    profile that hosts leave alone.
     """
-    from_env = os.environ.get("LOCALAPPDATA", "")
-    if from_env and (bs + "Packages" + bs) not in from_env:
-        return from_env
-    return os.path.join(os.path.expanduser("~"), "AppData", "Local")
+    local = os.environ.get("LOCALAPPDATA", "")
+    candidate = os.path.join(local, "Programs") if local else ""
+    if candidate and not _is_redirected(candidate):
+        return candidate
+    return os.path.join(os.path.expanduser("~"), "Documents")
 
 
-INSTALL_DIR = os.path.join(_local_appdata(), "Programs", APP_NAME)
+def _is_redirected(folder: str) -> bool:
+    packages = os.path.join(os.path.expanduser("~"), "AppData", "Local", "Packages")
+    probe = os.path.join(folder, ".talkwithme_probe")
+    try:
+        os.makedirs(folder, exist_ok=True)
+        with open(probe, "w", encoding="ascii") as f:
+            f.write("probe")
+    except OSError:
+        return True
+    try:
+        for root, _dirs, files in os.walk(packages):
+            if ".talkwithme_probe" in files:
+                return True
+    except OSError:
+        pass
+    finally:
+        try:
+            os.remove(probe)
+        except OSError:
+            pass
+    return False
+
+
+INSTALL_DIR = os.path.join(_install_root(), APP_NAME)
 INSTALLED_EXE = os.path.join(INSTALL_DIR, f"{APP_NAME}.exe")
 ICON_PATH = os.path.join(INSTALL_DIR, f"{APP_NAME}.ico")
 START_MENU_DIR = os.path.join(os.environ.get("APPDATA", ""),
@@ -103,7 +132,7 @@ def install(source_exe: str | None = None) -> str:
         log.warning("kon icoon niet schrijven: %s", e)
 
     try:
-        _create_shortcut(SHORTCUT_PATH, INSTALLED_EXE, f"{INSTALLED_EXE},0")
+        _create_shortcut(SHORTCUT_PATH, INSTALLED_EXE, f"{ICON_PATH},0")
     except Exception as e:
         log.warning("kon Start-menu snelkoppeling niet maken: %s", e)
 

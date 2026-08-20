@@ -21,11 +21,19 @@ mute-toets op je toetsenbord. Twee stille dictaten op rij geven een venster
 met het volledige stappenplan. Voorheen meldde de app "geen spraak herkend"
 en wees daarmee naar de spreker terwijl de microfoon uitstond.
 
-**Opgelost: blanco pictogram op de taakbalk.** Werd de app geïnstalleerd
-vanuit een verpakte (MSIX) omgeving, dan legde Windows de bestanden in een
-container en verwees de snelkoppeling naar een pad dat daarbuiten niet
-bestaat. Het installatiepad wordt nu uit het gebruikersprofiel opgebouwd in
-plaats van uit de omgevingsvariabele.
+**Opgelost: blanco pictogram in Start en op de taakbalk.** Werd de app
+geïnstalleerd vanuit een verpakte (MSIX) omgeving, dan leidde Windows het
+schrijven naar `AppData\Local` om naar een containermap. Het installeren
+leek te lukken — de installer las zijn eigen bestand gewoon terug — maar
+Explorer zag daar niets, dus verwees de snelkoppeling naar een doel dat
+voor Windows niet bestond. De installer detecteert die omleiding nu met een
+testbestand en wijkt uit naar een map die wel doorgelaten wordt. De
+snelkoppeling verwijst bovendien naar een apart `.ico`-bestand in plaats
+van naar een pictogramindex in een `.exe` van 50 MB.
+
+Ook de indicator werd verborgen opgebouwd: hij zette zijn vensterstijl pas
+na het aanmaken, waardoor Windows hem heel even als taakbalkknop
+registreerde en er bij elke opname een leeg pictogram opflitste.
 
 ## 0.3.0
 

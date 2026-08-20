@@ -95,8 +95,17 @@ class Indicator:
         if self._win is not None:
             return
         win = tk.Toplevel(self._root)
+        # Built hidden and only shown once the extended styles are set.
+        # A Toplevel that is visible for even a frame before WS_EX_TOOLWINDOW
+        # is applied registers a taskbar button, which flashes up as a
+        # blank white icon on every single recording.
+        win.withdraw()
         win.overrideredirect(True)
         win.attributes("-topmost", True)
+        try:
+            win.attributes("-toolwindow", True)
+        except tk.TclError:
+            pass
         # Everything painted in the key colour becomes see-through, which is
         # how the pill gets genuinely rounded corners instead of dark stubs.
         win.configure(bg=TRANSPARENT_KEY)
@@ -113,6 +122,7 @@ class Indicator:
         canvas.pack(fill="both", expand=True)
 
         _make_unfocusable(win)
+        win.deiconify()
         self._win, self._canvas = win, canvas
         self._smoothed = [0.0] * BAR_COUNT
 
