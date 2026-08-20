@@ -13,6 +13,8 @@ a = Analysis(
         "pystray._win32",
         "keyring.backends.Windows",
         "win32com.client",
+        "docx",
+        "reportlab.graphics.barcode.code128",
     ],
     hookspath=[],
     excludes=[],

@@ -40,6 +40,30 @@ De regels volgen uit wat de doel-app met de tekst *doet*, niet uit smaak:
 Uitschakelbaar via het systeemvakmenu; de instructies per toon zijn aanpasbaar
 in Instellingen.
 
+## Vergadernotities
+
+**Ctrl+Win+M** neemt een heel gesprek op, of gebruik de knop in het tabblad
+Vergaderingen. Bij het stoppen wordt het transcript uitgewerkt tot notities met
+besluiten, actiepunten en aandachtspunten.
+
+Twee dingen die het bruikbaar maken in plaats van aardig:
+
+**Het neemt beide kanten op.** Naast je microfoon wordt het geluid van je
+computer opgenomen, zodat de andere deelnemers in een Teams- of Zoom-gesprek
+ook in het transcript staan. Dat gaat via een loopback- of Stereo Mix-ingang;
+die staat in Windows soms uit. Is er geen tweede bron, dan zegt de app dat bij
+het starten in plaats van de helft van de vergadering stil weg te laten.
+
+**Jouw notities leiden.** Typ tijdens de vergadering losse steekwoorden in het
+notitieveld. Die worden achteraf niet vervangen door een samenvatting, maar
+aangevuld met de details uit het transcript — in jouw volgorde en met jouw
+klemtoon. Wat je zelf niet noteerde maar wel een besluit of actie was, komt
+erbij met een `+` ervoor, zodat je ziet wat je gemist had.
+
+Het transcript blijft naast de notities bewaard, want een samenvatting is een
+interpretatie en die moet je kunnen nakijken. Exporteren kan als Markdown,
+tekst, HTML, Word of PDF.
+
 ---
 
 ## Installeren
@@ -79,11 +103,17 @@ Zonder Gemini-key werkt de app gewoon door en plakt hij de ruwe transcriptie.
 | Ctrl+Win ingedrukt houden | Opname loopt, indicator rechtsonder toont je stem |
 | Loslaten | Verwerken en plakken |
 | Escape tijdens opname | Annuleren, er wordt niets geplakt |
+| Ctrl+Win+M | Vergaderopname starten of stoppen |
 | Klik op het systeemvakicoon | Het venster opent |
 
-Het venster heeft drie tabbladen: **Geschiedenis** (elk dictaat, met een
-schakelaar tussen opgeschoonde en ruwe tekst), **Weekrapport** (hoeveel tijd
-dicteren bespaarde tegenover typen) en **Instellingen**.
+Het venster heeft vier tabbladen: **Geschiedenis** (elk dictaat, met een
+schakelaar tussen opgeschoonde en ruwe tekst), **Weekrapport**, **Vergaderingen**
+en **Instellingen**.
+
+Het weekrapport toont niet alleen hoeveel tijd je bespaarde, maar ook waar de
+wachttijd heen gaat — transcriptie, opschonen, de rest — en dat uitgesplitst per
+app. Averages verbergen wat je kunt aanpakken; "Outlook is trager omdat die
+dictaten vier keer zo lang zijn" is bruikbaar, "gemiddeld twee seconden" niet.
 
 ---
 

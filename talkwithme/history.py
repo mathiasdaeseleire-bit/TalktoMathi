@@ -23,7 +23,11 @@ _lock = threading.Lock()
 
 def add(raw: str, cleaned: str, app: str, cleaned_applied: bool,
         tone: str | None = None, record_s: float = 0.0,
-        process_ms: int = 0) -> None:
+        process_ms: int = 0, stt_ms: int = 0, cleanup_ms: int = 0,
+        delivery: str = "pasted", cleanup_error: str | None = None) -> None:
+    """One line per dictation. The timings are split out because "where did
+    the wait go" is the question the report exists to answer, and a single
+    total cannot answer it."""
     entry = {
         "ts": datetime.now().isoformat(timespec="seconds"),
         "raw": raw,
@@ -33,6 +37,10 @@ def add(raw: str, cleaned: str, app: str, cleaned_applied: bool,
         "tone": tone,
         "record_s": round(record_s, 2),
         "process_ms": process_ms,
+        "stt_ms": stt_ms,
+        "cleanup_ms": cleanup_ms,
+        "delivery": delivery,          # pasted | clipboard | failed
+        "cleanup_error": cleanup_error,
     }
     try:
         config_mod.ensure_app_dir()

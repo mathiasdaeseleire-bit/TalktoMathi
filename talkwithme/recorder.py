@@ -25,7 +25,9 @@ log = logging.getLogger("talkwithme.recorder")
 
 RATE = 16000
 BLOCKSIZE = 4096  # see docstring in _open_stream for why not smaller
-SILENCE_RMS_THRESHOLD = 150  # int16 RMS; tune if false silence-stops occur
+SILENCE_RMS_THRESHOLD = 150
+OPEN_ATTEMPTS = 4
+OPEN_RETRY_S = 0.12  # int16 RMS; tune if false silence-stops occur
 
 
 def _preferred_input_device():
@@ -50,45 +52,64 @@ class Recorder:
         self.last_voice_ts = 0.0
         self.recording_start_ts = 0.0
         self.stream: sd.InputStream | None = None
+        self.using_fallback_device = False
         # Recent per-block RMS, read by the on-screen waveform indicator.
         self.levels: collections.deque[float] = collections.deque(maxlen=48)
 
     def _open_stream(self) -> None:
-        """WASAPI shared-mode devices generally reject a samplerate that
-        doesn't match their mix format, so query the native rate up front
-        instead of probing with a doomed OpenStream call. Falls back to the
-        system default device/rate if WASAPI querying or opening fails.
+        """Open the real microphone, retrying before giving up on it.
+
+        The preferred WASAPI device intermittently refuses to start with a
+        WDM-KS ioctl error, usually because something else let go of it a
+        moment ago. Falling straight through to the system default looks
+        like success and then records pure silence, which is worse than an
+        error: you only find out after speaking. So the preferred device
+        gets several short retries, and the fallback is marked as suspect
+        so the caller can warn if nothing was captured.
         """
         device = _preferred_input_device()
-        candidates: list[tuple[int | None, int]] = []
+        rate = RATE
         if device is not None:
             try:
-                native = int(sd.query_devices(device)["default_samplerate"])
-                candidates.append((device, native))
+                rate = int(sd.query_devices(device)["default_samplerate"])
             except Exception:
-                candidates.append((device, self.rate))
-        candidates.append((None, RATE))
+                pass
 
         last_err: Exception | None = None
-        for i, (dev, rate) in enumerate(candidates):
-            try:
-                stream = sd.InputStream(
-                    samplerate=rate, channels=1, dtype="int16",
-                    blocksize=BLOCKSIZE, callback=self._cb,
-                    device=dev, latency="high",
-                )
-                self.rate = rate
-                self.stream = stream
-                self.stream.start()
-                log.info("audio-stream geopend: candidate #%d/%d device=%s rate=%d",
-                          i + 1, len(candidates), dev, rate)
-                return
-            except Exception as e:
-                log.warning("audio-stream candidate #%d/%d (device=%s rate=%d) faalde: %s",
-                             i + 1, len(candidates), dev, rate, e)
-                last_err = e
-                continue
+        if device is not None:
+            for attempt in range(1, OPEN_ATTEMPTS + 1):
+                try:
+                    self._start(device, rate)
+                    self.using_fallback_device = False
+                    if attempt > 1:
+                        log.info("microfoon geopend na poging %d", attempt)
+                    return
+                except Exception as e:
+                    last_err = e
+                    log.warning("microfoon openen mislukt (poging %d/%d): %s",
+                                 attempt, OPEN_ATTEMPTS, e)
+                    time.sleep(OPEN_RETRY_S)
+
+        try:
+            self._start(None, RATE)
+            self.using_fallback_device = True
+            log.warning("teruggevallen op het standaardapparaat; dat levert op "
+                         "sommige machines stilte op")
+            return
+        except Exception as e:
+            last_err = e
         raise last_err  # type: ignore[misc]
+
+    def _start(self, device, rate: int) -> None:
+        stream = sd.InputStream(
+            samplerate=rate, channels=1, dtype="int16",
+            blocksize=BLOCKSIZE, callback=self._cb,
+            device=device, latency="high",
+        )
+        stream.start()
+        self.rate = rate
+        self.stream = stream
+        log.info("audio-stream geopend: device=%s rate=%d", device, rate)
 
     def _cb(self, indata, frames, time_info, status):
         mono = indata[:, 0]

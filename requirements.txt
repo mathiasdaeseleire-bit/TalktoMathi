@@ -7,4 +7,7 @@ pystray
 Pillow
 winotify
 psutil
+httpx
 google-genai
+python-docx
+reportlab

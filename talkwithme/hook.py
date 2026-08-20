@@ -37,6 +37,7 @@ LLKHF_INJECTED = 0x10
 VK_LCTRL, VK_RCTRL, VK_CTRL = 0xA2, 0xA3, 0x11
 VK_LWIN, VK_RWIN = 0x5B, 0x5C
 VK_ESCAPE = 0x1B
+VK_M = 0x4D
 
 # LRESULT/WPARAM/LPARAM are pointer-sized: 64-bit on x64. Declaring
 # LRESULT as c_long (32-bit) truncates the value CallNextHookEx returns,
@@ -65,6 +66,7 @@ class KBDLLHOOKSTRUCT(ctypes.Structure):
 
 
 START = "START"
+MEETING = "MEETING"
 STOP = "STOP"
 CANCEL = "CANCEL"
 
@@ -162,6 +164,18 @@ class KeyboardHook:
                     vk = kb.vkCode
                     down = wParam in (WM_KEYDOWN, WM_SYSKEYDOWN)
 
+                    if down and vk == VK_M and ctrl_down() and win_down():
+                        # Ctrl+Win+M toggles a meeting recording. Tapping M
+                        # is safe to swallow: suppressing a normal key while
+                        # a modifier is held cannot strand that modifier,
+                        # which is the trap that applies to modifier keyups.
+                        # Without swallowing it, an "m" would land in
+                        # whatever the user was typing in.
+                        if self.firing:
+                            self.firing = False
+                            self._push(CANCEL)
+                        self._push(MEETING)
+                        return 1
                     if down and vk == VK_ESCAPE and self._is_active_cb():
                         self.firing = False
                         self._push(CANCEL)

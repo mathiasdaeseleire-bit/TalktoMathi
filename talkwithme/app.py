@@ -18,6 +18,7 @@ import threading
 import time
 import tkinter as tk
 
+import numpy as np
 import win32gui
 
 from . import __version__
@@ -25,24 +26,27 @@ from . import config as config_mod
 from . import history as history_mod
 from . import notify
 from . import paste
+from . import meetings as meetings_mod
 from . import permissions
 from . import postprocess
 from . import secrets_store
 from . import single_instance
 from . import tones as tones_mod
-from .hook import KeyboardHook, START, STOP, CANCEL
+from .hook import KeyboardHook, START, STOP, CANCEL, MEETING
 from .indicator import Indicator
 from .polish import PolishClient
 from .recorder import Recorder
 from .stt import SttClient, SttError
 from .tray import TrayApp
-from .ui import TAB_HISTORY, TAB_REPORT, TAB_SETTINGS, MainWindow
+from .ui import (TAB_HISTORY, TAB_MEETINGS, TAB_REPORT, TAB_SETTINGS,
+                  MainWindow)
 
 log = logging.getLogger("talkwithme.app")
 
 MONITOR_INTERVAL_S = 0.2
 PREWARM_IDLE_S = 60.0
 MIN_RECORDING_S = 0.3
+SILENT_PEAK = 40        # int16; below this the mic gave us nothing
 
 
 class App:
@@ -57,12 +61,21 @@ class App:
         self._last_activity_ts = time.monotonic()
 
         self.recorder = Recorder()
+        self.meeting_recorder = meetings_mod.MeetingRecorder()
+        self.meeting_busy = False
+        # Notes typed while the meeting runs; the write-up expands these
+        # instead of summarising from scratch (see meetings.build_prompt).
+        self.meeting_notes_draft = ""
         self._build_clients()
 
         self.root = tk.Tk()
         self.root.withdraw()  # no main window; tray + popups only
         self._apply_window_icon()
-        self.indicator = Indicator(self.root, lambda: self.recorder.levels)
+        self.indicator = Indicator(
+            self.root,
+            lambda: (self.recorder.levels if not self.meeting_recorder.recording
+                      else [self.meeting_recorder.level] * 20),
+            get_meeting_elapsed=lambda: self.meeting_recorder.elapsed_s())
 
         self.tray = TrayApp(
             on_quit=self.quit,
@@ -76,6 +89,8 @@ class App:
             on_toggle_autostart=self._toggle_autostart,
             is_autostart_enabled=self._autostart_enabled,
             on_check_updates=lambda: self.check_updates(manual=True),
+            on_toggle_meeting=self.toggle_meeting,
+            is_meeting=self.is_meeting,
         )
 
         self.hook = KeyboardHook(
@@ -159,11 +174,13 @@ class App:
                     req = self._ui_queue.get_nowait()
                 except queue.Empty:
                     break
-                if req in ("settings", "history", "report"):
+                if req in ("settings", "history", "report", "meetings"):
                     MainWindow.open(self.root, self.config, self._save_settings,
                                      {"history": TAB_HISTORY,
                                       "report": TAB_REPORT,
-                                      "settings": TAB_SETTINGS}[req])
+                                      "meetings": TAB_MEETINGS,
+                                      "settings": TAB_SETTINGS}[req],
+                                     controller=self)
                 elif isinstance(req, tuple) and req[0] == "update":
                     self._offer_update(req[1])
                 elif isinstance(req, tuple) and req[0] == "update_msg":
@@ -235,6 +252,8 @@ class App:
                     self._on_stop()
                 elif event == CANCEL:
                     self._on_cancel()
+                elif event == MEETING:
+                    self.toggle_meeting()
             except Exception:
                 log.exception("onverwachte fout bij event %s", event)
                 self._set_state("idle")
@@ -316,6 +335,24 @@ class App:
             self._ui_queue.put("settings")
             return
 
+        # A recording that is pure silence means the microphone never
+        # delivered anything, not that the user spoke too quietly. Saying
+        # so beats sending silence off to be transcribed and then blaming
+        # it on "geen spraak herkend", which points at the wrong thing.
+        peak = int(np.max(np.abs(audio))) if len(audio) else 0
+        if peak < SILENT_PEAK:
+            log.warning("opname is stil (piek=%d, terugvalapparaat=%s)",
+                         peak, self.recorder.using_fallback_device)
+            if self.recorder.using_fallback_device:
+                notify.notify("TalkWithMe",
+                               "Je microfoon was even bezet, er is niets opgenomen. "
+                               "Probeer het zo opnieuw.")
+            else:
+                notify.notify("TalkWithMe",
+                               "Er kwam geen geluid binnen. Staat de juiste microfoon "
+                               "ingesteld en niet gedempt?")
+            return
+
         try:
             raw_text, stt_ms = self.stt.transcribe(audio, self.recorder.rate)
         except SttError as e:
@@ -330,6 +367,7 @@ class App:
         final_text = raw_text
         cleanup_ms = 0
         cleaned_applied = False
+        cleanup_error = None
         tone = self.ctx_tone if self.config.tone_enabled else None
         if self.config.cleanup_enabled and self.cleanup_client:
             instructions = tones_mod.build_instructions(
@@ -340,6 +378,7 @@ class App:
                 cleaned_applied = True
             except Exception as e:
                 log.warning("opschonen mislukt, ruwe tekst plakken: %s", e)
+                cleanup_error = type(e).__name__
                 final_text = raw_text
 
         # Runs whether or not the model was involved: the layout rules are
@@ -352,36 +391,126 @@ class App:
                   stt_ms, cleanup_ms, total_ms, cleaned_applied, tone or "—")
         log.info("tekst: %r", final_text)
 
+        delivery = self._deliver(final_text)
         history_mod.add(raw_text, final_text, self.ctx_exe or self.ctx_title,
                          cleaned_applied, tone if cleaned_applied else None,
                          record_s=len(audio) / self.recorder.rate,
-                         process_ms=total_ms)
-        self._deliver(final_text)
+                         process_ms=total_ms, stt_ms=stt_ms,
+                         cleanup_ms=cleanup_ms, delivery=delivery,
+                         cleanup_error=cleanup_error)
 
-    def _deliver(self, text: str) -> None:
-        """Never lose the user's words: cursor, else clipboard + notice."""
+    def _deliver(self, text: str) -> str:
+        """Never lose the user's words: cursor, else clipboard + notice.
+        Returns what actually happened, so the report can show how often
+        pasting really lands."""
         try:
             current = win32gui.GetForegroundWindow()
             if current != self.ctx_hwnd:
                 log.warning("venster gewisseld, niet geplakt")
                 paste.set_clipboard_text(text)
                 notify.notify("TalkWithMe", "Venster gewisseld — tekst staat op je klembord.")
-                return
+                return "clipboard"
             if paste.insert_text(text, self.ctx_exe, self.config.paste_keys,
                                   notify_cb=notify.notify):
                 log.info("geplakt in %r", self.ctx_title)
-                return
+                return "pasted"
             log.warning("plakken mislukt")
             notify.notify("TalkWithMe", "Plakken mislukt — tekst staat op je klembord.")
+            return "clipboard"
         except Exception:
             log.exception("fout bij afleveren van tekst")
             try:
                 if paste.set_clipboard_text(text):
                     notify.notify("TalkWithMe", "Tekst staat op je klembord.")
-                else:
-                    notify.notify("TalkWithMe", text[:200])
+                    return "clipboard"
+                notify.notify("TalkWithMe", text[:200])
             except Exception:
                 notify.notify("TalkWithMe", text[:200])
+            return "failed"
+
+    # ---- meetings --------------------------------------------------
+
+    def toggle_meeting(self) -> None:
+        """Start or finish a meeting recording. Deliberately independent of
+        the dictation state machine: a meeting runs for an hour and must
+        not be disturbed by, or disturb, a quick dictation."""
+        if self.meeting_recorder.recording:
+            self._finish_meeting()
+            return
+        try:
+            self.meeting_recorder.start()
+        except Exception as e:
+            log.exception("kon vergaderopname niet starten")
+            notify.notify("TalkWithMe", f"Opname starten mislukt: {e}")
+            return
+        self.indicator.show_meeting()
+        self.tray.set_state("meeting")
+        both = self.meeting_recorder.system_audio
+        notify.notify("TalkWithMe",
+                       "Vergadering wordt opgenomen"
+                       + (" (jij en de anderen)." if both else
+                          " (alleen je microfoon; systeemgeluid is niet beschikbaar).")
+                       + " Ctrl+Win+M stopt.")
+
+    def is_meeting(self) -> bool:
+        return self.meeting_recorder.recording
+
+    def _finish_meeting(self) -> None:
+        meeting = self.meeting_recorder.stop()
+        self.indicator.hide()
+        self.tray.set_state("idle")
+        if meeting is None:
+            return
+        if meeting.duration_s < 10:
+            notify.notify("TalkWithMe", "Opname te kort, niets uitgewerkt.")
+            return
+
+        self.meeting_busy = True
+        self.tray.set_state("processing")
+        self.indicator.show_processing()
+        notify.notify("TalkWithMe",
+                       f"Vergadering van {int(meeting.duration_s // 60)} minuten "
+                       f"wordt uitgewerkt...")
+
+        draft = self.meeting_notes_draft
+        self.meeting_notes_draft = ""
+
+        def work():
+            from . import meetings
+            try:
+                key = secrets_store.get_elevenlabs_api_key()
+                if not key:
+                    raise RuntimeError("geen ElevenLabs-key ingesteld")
+                transcript, _ = meetings.transcribe(
+                    meeting, key, self.config.stt_model, self.config.language)
+                if not transcript.strip():
+                    raise RuntimeError("geen spraak herkend in de opname")
+
+                instruction, payload = meetings.build_prompt(transcript, draft)
+                notes = transcript
+                if self.cleanup_client:
+                    try:
+                        notes, _ = self.cleanup_client.cleanup(
+                            payload, instruction, timeout_s=180.0)
+                    except Exception as e:
+                        # The transcript alone is still worth keeping.
+                        log.warning("uitwerken mislukt, alleen transcript: %s", e)
+                        notes = "_Uitwerken mislukt; hieronder staat het ruwe transcript._"
+
+                meetings.write_notes(meeting, transcript, notes)
+                self.tray.notify("TalkWithMe", "Notities klaar.")
+                self._ui_queue.put("meetings")
+            except Exception as e:
+                log.exception("vergadering uitwerken mislukt")
+                self._ui_queue.put(("update_msg",
+                    "Uitwerken mislukt:\n" + str(e) +
+                    "\n\nDe opname is bewaard:\n" + meeting.audio_path))
+            finally:
+                self.meeting_busy = False
+                self.indicator.hide()
+                self.tray.set_state("idle")
+
+        threading.Thread(target=work, name="meeting-notes", daemon=True).start()
 
     # ---- monitor / prewarm -----------------------------------------
 

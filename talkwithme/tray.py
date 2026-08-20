@@ -18,6 +18,7 @@ TITLES = {
     "idle": "TalkWithMe — houd Ctrl+Win vast om te praten",
     "listening": "TalkWithMe — luistert",
     "processing": "TalkWithMe — verwerkt",
+    "meeting": "TalkWithMe — vergadering wordt opgenomen",
 }
 
 
@@ -25,7 +26,8 @@ class TrayApp:
     def __init__(self, on_quit, on_settings, on_history, on_toggle_cleanup,
                  is_cleanup_enabled, on_toggle_autostart, is_autostart_enabled,
                  on_report, on_toggle_tone, is_tone_enabled,
-                 on_check_updates=None):
+                 on_check_updates=None, on_toggle_meeting=None,
+                 is_meeting=None):
         self._icons = {state: make_icon(state) for state in TITLES}
         self._on_quit = on_quit
 
@@ -35,6 +37,10 @@ class TrayApp:
             pystray.MenuItem("Geschiedenis", lambda icon, item: on_history(),
                               default=True),
             pystray.MenuItem("Weekrapport", lambda icon, item: on_report()),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Vergadering opnemen",
+                              lambda icon, item: on_toggle_meeting and on_toggle_meeting(),
+                              checked=lambda item: bool(is_meeting and is_meeting())),
             pystray.MenuItem("Instellingen", lambda icon, item: on_settings()),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Mijn spraak opschonen",

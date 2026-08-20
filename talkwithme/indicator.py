@@ -19,7 +19,7 @@ import math
 import time
 import tkinter as tk
 
-from .theme import (ACCENT, ACCENT_DEEP, ACCENT_SOFT, AMBER, BG, BORDER,
+from .theme import (ACCENT, ACCENT_DEEP, ACCENT_SOFT, AMBER, BG, BORDER, GREEN,
                      SURFACE, TEXT, TEXT_FAINT, TEXT_MUTED, TRANSPARENT_KEY,
                      mix, round_rect_points)
 
@@ -39,6 +39,14 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TOPMOST = 0x00000008
 
 
+def _elapsed_text(seconds: float) -> str:
+    minutes, sec = divmod(int(max(0, seconds)), 60)
+    if minutes < 60:
+        return f"{minutes}:{sec:02d}  ·  klik tray om te stoppen"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}:{minutes:02d}:{sec:02d}  ·  klik tray om te stoppen"
+
+
 def _make_unfocusable(win: tk.Toplevel) -> None:
     """Tk has no API for this, so set the extended window styles directly.
     WS_EX_NOACTIVATE stops the window from ever being activated;
@@ -56,9 +64,10 @@ def _make_unfocusable(win: tk.Toplevel) -> None:
 
 
 class Indicator:
-    def __init__(self, root: tk.Tk, get_levels):
+    def __init__(self, root: tk.Tk, get_levels, get_meeting_elapsed=None):
         self._root = root
         self._get_levels = get_levels
+        self._get_meeting_elapsed = get_meeting_elapsed or (lambda: 0.0)
         self._state = "hidden"          # hidden | listening | processing
         self._win: tk.Toplevel | None = None
         self._canvas: tk.Canvas | None = None
@@ -73,6 +82,9 @@ class Indicator:
 
     def show_processing(self) -> None:
         self._state = "processing"
+
+    def show_meeting(self) -> None:
+        self._state = "meeting"
 
     def hide(self) -> None:
         self._state = "hidden"
@@ -131,7 +143,8 @@ class Indicator:
         c.delete("all")
 
         listening = self._state == "listening"
-        accent = ACCENT if listening else AMBER
+        meeting = self._state == "meeting"
+        accent = ACCENT if listening else (GREEN if meeting else AMBER)
         now = time.monotonic() - self._t0
 
         # White pill on a hairline border, the way a Stripe card sits on the
@@ -151,10 +164,16 @@ class Indicator:
                        fill=mix(accent, ACCENT_SOFT, pulse if listening else 0.0),
                        outline="")
 
-        c.create_text(36, cy - 9, text="Luistert" if listening else "Verwerkt",
-                       anchor="w", fill=TEXT, font=("Segoe UI Semibold", 9))
-        c.create_text(36, cy + 8, text="Ctrl+Win loslaten" if listening else "Even geduld",
-                       anchor="w", fill=TEXT_FAINT, font=("Segoe UI", 7))
+        if meeting:
+            title, subtitle = "Vergadering", _elapsed_text(self._get_meeting_elapsed())
+        elif listening:
+            title, subtitle = "Luistert", "Ctrl+Win loslaten"
+        else:
+            title, subtitle = "Verwerkt", "Even geduld"
+        c.create_text(36, cy - 9, text=title, anchor="w", fill=TEXT,
+                       font=("Segoe UI Semibold", 9))
+        c.create_text(36, cy + 8, text=subtitle, anchor="w", fill=TEXT_FAINT,
+                       font=("Segoe UI", 7))
 
         self._draw_bars(c, listening, accent, now)
 
@@ -164,7 +183,7 @@ class Indicator:
         base_y = HEIGHT / 2 + 9
         max_h = 15.0
 
-        if listening:
+        if listening or self._state == "meeting":
             levels = list(self._get_levels() or [])
             recent = levels[-BAR_COUNT:]
             recent = [0.0] * (BAR_COUNT - len(recent)) + recent

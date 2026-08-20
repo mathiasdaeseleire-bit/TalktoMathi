@@ -27,8 +27,8 @@ from . import tones as tones_mod
 
 log = logging.getLogger("talkwithme.ui")
 
-TAB_HISTORY, TAB_REPORT, TAB_SETTINGS = 0, 1, 2
-TAB_NAMES = ("Geschiedenis", "Weekrapport", "Instellingen")
+TAB_HISTORY, TAB_REPORT, TAB_MEETINGS, TAB_SETTINGS = 0, 1, 2, 3
+TAB_NAMES = ("Geschiedenis", "Weekrapport", "Vergaderingen", "Instellingen")
 
 
 # ----------------------------------------------------------------------
@@ -108,18 +108,20 @@ class MainWindow:
     _instance: "MainWindow | None" = None
 
     @classmethod
-    def open(cls, root: tk.Tk, config, on_save, tab: int = TAB_HISTORY) -> "MainWindow":
+    def open(cls, root: tk.Tk, config, on_save, tab: int = TAB_HISTORY,
+             controller=None) -> "MainWindow":
         inst = cls._instance
         if inst is not None and inst.win.winfo_exists():
             inst.show(tab)
             return inst
-        inst = cls(root, config, on_save)
+        inst = cls(root, config, on_save, controller)
         cls._instance = inst
         inst.show(tab)
         return inst
 
-    def __init__(self, root: tk.Tk, config, on_save):
+    def __init__(self, root: tk.Tk, config, on_save, controller=None):
         self.config = config
+        self.controller = controller
 
         self.win = tk.Toplevel(root)
         self.win.title("TalkWithMe")
@@ -146,6 +148,7 @@ class MainWindow:
         self.tabs = [
             HistoryTab(self.body),
             ReportTab(self.body),
+            MeetingsTab(self.body, controller),
             SettingsTab(self.body, config, on_save),
         ]
 
@@ -166,6 +169,7 @@ class MainWindow:
 
     def show(self, tab: int = TAB_HISTORY) -> None:
         self.tabbar.select(tab)
+        self.tabs[tab].refresh()
         self.win.deiconify()
         self.win.lift()
         self.win.focus_force()
@@ -301,151 +305,269 @@ class HistoryTab:
 # ----------------------------------------------------------------------
 
 class ReportTab:
+    """Scrollable dashboard: headline cubes, where the wait goes, the week,
+    and a breakdown per destination.
+
+    The point of the per-channel table is that averages hide the thing you
+    can act on. "Two seconds of waiting" is not actionable; "Outlook is
+    slow because those dictations are four times longer" is.
+    """
+
     DAY_NAMES = ("ma", "di", "wo", "do", "vr", "za", "zo")
+    CUBE_KEYS = ("saved", "dictations", "words", "wpm", "wait", "reliability")
 
     def __init__(self, parent: tk.Misc):
         self.frame = tk.Frame(parent, bg=theme.BG)
         self.week = self.total = None
 
-        # ---- hero: the one number this screen exists for ------------
-        hero = card(self.frame)
-        hero.pack(fill="x")
-        hero_in = tk.Frame(hero, bg=theme.SURFACE)
-        hero_in.pack(fill="x", padx=theme.CARD_PAD, pady=theme.CARD_PAD)
+        canvas = tk.Canvas(self.frame, bg=theme.BG, highlightthickness=0, bd=0)
+        sb = ttk.Scrollbar(self.frame, orient="vertical", command=canvas.yview)
+        body = tk.Frame(canvas, bg=theme.BG)
+        body.bind("<Configure>",
+                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        window_id = canvas.create_window((0, 0), window=body, anchor="nw")
+        canvas.bind("<Configure>",
+                     lambda e: canvas.itemconfigure(window_id, width=e.width - 16))
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        canvas.bind_all("<MouseWheel>",
+                         lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
+        self._body = body
 
-        left = tk.Frame(hero_in, bg=theme.SURFACE)
-        left.pack(side="left", anchor="n")
-        caps(left, "Deze week bespaard", bg=theme.SURFACE).pack(anchor="w")
+        self._build_cubes(body)
+        self._build_compare(body)
+        self._build_latency(body)
+        self._build_week(body)
+        self._build_channels(body)
+        self._build_footer(body)
 
-        value_row = tk.Frame(left, bg=theme.SURFACE)
-        value_row.pack(anchor="w", pady=(6, 0))
-        self.hero_value = label(value_row, "—", font=theme.FONT_HERO,
-                                 fg=theme.TEXT, bg=theme.SURFACE)
-        self.hero_value.pack(side="left")
-        self.hero_unit = label(value_row, "", font=theme.FONT_HERO_UNIT,
-                                fg=theme.TEXT_MUTED, bg=theme.SURFACE)
-        self.hero_unit.pack(side="left", anchor="s", padx=(9, 0), pady=(0, 11))
+        self.refresh()
 
-        self.hero_sub = label(left, "", font=theme.FONT_UI_SMALL,
-                               fg=theme.TEXT_MUTED, bg=theme.SURFACE)
-        self.hero_sub.pack(anchor="w", pady=(2, 0))
+    # ---- layout ----------------------------------------------------
 
-        right = tk.Frame(hero_in, bg=theme.SURFACE)
-        right.pack(side="right", anchor="n")
-        self.stat_cells = {}
-        for key, title in (("dictations", "Dictaten"),
-                            ("words", "Woorden"),
-                            ("wpm", "Jouw tempo")):
-            cell = tk.Frame(right, bg=theme.SURFACE)
-            cell.pack(side="left", padx=(30, 0))
-            caps(cell, title, bg=theme.SURFACE).pack(anchor="e")
-            val = label(cell, "—", font=theme.FONT_STAT, bg=theme.SURFACE)
-            val.configure(anchor="e")
-            val.pack(anchor="e", pady=(5, 0))
-            self.stat_cells[key] = val
+    def _build_cubes(self, body: tk.Misc) -> None:
+        caps(body, "Deze week").pack(anchor="w")
+        grid = tk.Frame(body, bg=theme.BG)
+        grid.pack(fill="x", pady=(10, 0))
+        for col in range(3):
+            grid.columnconfigure(col, weight=1, uniform="cube")
 
-        # ---- the comparison that makes the win legible --------------
-        caps(self.frame, "Typen versus spreken").pack(anchor="w", pady=(theme.GAP_L, 10))
-        self.compare = tk.Canvas(self.frame, height=86, bg=theme.BG,
+        titles = {
+            "saved": ("Bespaard", "tegenover typen"),
+            "dictations": ("Dictaten", "deze week"),
+            "words": ("Woorden", "uitgesproken"),
+            "wpm": ("Spreektempo", "gemeten"),
+            "wait": ("Wachttijd", "mediaan na loslaten"),
+            "reliability": ("Op de cursor", "zonder omweg geplakt"),
+        }
+        self.cubes = {}
+        for i, key in enumerate(self.CUBE_KEYS):
+            title, sub = titles[key]
+            cube = card(grid)
+            cube.grid(row=i // 3, column=i % 3, sticky="nsew",
+                       padx=(0 if i % 3 == 0 else 10, 0),
+                       pady=(0 if i < 3 else 10, 0))
+            inner = tk.Frame(cube, bg=theme.SURFACE)
+            inner.pack(fill="both", expand=True, padx=18, pady=16)
+            caps(inner, title, bg=theme.SURFACE).pack(anchor="w")
+            value = label(inner, "—", font=theme.FONT_STAT, bg=theme.SURFACE)
+            value.pack(anchor="w", pady=(7, 0))
+            note = label(inner, sub, font=theme.FONT_UI_TINY,
+                          fg=theme.TEXT_FAINT, bg=theme.SURFACE)
+            note.pack(anchor="w", pady=(3, 0))
+            self.cubes[key] = (value, note)
+
+    def _build_compare(self, body: tk.Misc) -> None:
+        caps(body, "Typen versus spreken").pack(anchor="w", pady=(theme.GAP_L, 10))
+        self.compare = tk.Canvas(body, height=86, bg=theme.BG,
                                   highlightthickness=0, bd=0)
         self.compare.pack(fill="x")
         self.compare.bind("<Configure>", lambda e: self._draw_compare())
 
-        # ---- per day -------------------------------------------------
-        caps(self.frame, "Bespaard per dag").pack(anchor="w", pady=(theme.GAP_L, 10))
-        self.chart = tk.Canvas(self.frame, height=140, bg=theme.BG,
+    def _build_latency(self, body: tk.Misc) -> None:
+        caps(body, "Waar de wachttijd heen gaat").pack(anchor="w", pady=(theme.GAP_L, 4))
+        self.latency_note = label(body, "", font=theme.FONT_UI_SMALL, fg=theme.TEXT_MUTED)
+        self.latency_note.pack(anchor="w", pady=(0, 10))
+        self.latency = tk.Canvas(body, height=58, bg=theme.BG,
+                                  highlightthickness=0, bd=0)
+        self.latency.pack(fill="x")
+        self.latency.bind("<Configure>", lambda e: self._draw_latency())
+
+    def _build_week(self, body: tk.Misc) -> None:
+        caps(body, "Bespaard per dag").pack(anchor="w", pady=(theme.GAP_L, 10))
+        self.chart = tk.Canvas(body, height=140, bg=theme.BG,
                                 highlightthickness=0, bd=0)
         self.chart.pack(fill="x")
         self.chart.bind("<Configure>", lambda e: self._draw_chart())
 
-        # ---- per app -------------------------------------------------
-        caps(self.frame, "Waar").pack(anchor="w", pady=(theme.GAP_L, 8))
-        self.apps_frame = tk.Frame(self.frame, bg=theme.BG)
-        self.apps_frame.pack(fill="x")
+    def _build_channels(self, body: tk.Misc) -> None:
+        head = tk.Frame(body, bg=theme.BG)
+        head.pack(fill="x", pady=(theme.GAP_L, 10))
+        caps(head, "Per kanaal").pack(side="left")
+        self.channel_mode = tk.StringVar(value="app")
+        for text, value in (("App", "app"), ("Toon", "tone")):
+            ttk.Radiobutton(head, text=text, value=value,
+                             variable=self.channel_mode,
+                             command=self._fill_channels).pack(side="right", padx=(10, 0))
 
-        foot = tk.Frame(self.frame, bg=theme.BG)
-        foot.pack(fill="x", side="bottom", pady=(theme.GAP, 0))
+        self.channels = ttk.Treeview(
+            body, columns=("kanaal", "dictaten", "woorden", "lengte",
+                            "bespaard", "wacht", "opgeschoond"),
+            show="headings", selectmode="none", height=7)
+        for col, text, width, anchor in (
+            ("kanaal", "KANAAL", 190, "w"),
+            ("dictaten", "DICTATEN", 80, "e"),
+            ("woorden", "WOORDEN", 90, "e"),
+            ("lengte", "GEM. LENGTE", 100, "e"),
+            ("bespaard", "BESPAARD", 100, "e"),
+            ("wacht", "WACHTTIJD", 100, "e"),
+            ("opgeschoond", "OPGESCHOOND", 110, "e"),
+        ):
+            self.channels.heading(col, text=text, anchor=anchor)
+            self.channels.column(col, width=width, anchor=anchor,
+                                  stretch=(col == "kanaal"))
+        self.channels.pack(fill="x")
+        self.channels.tag_configure("odd", background=theme.SURFACE)
+        self.channels.tag_configure("even", background=theme.SURFACE_ALT)
+
+        self.insight = label(body, "", font=theme.FONT_UI_SMALL,
+                              fg=theme.TEXT_MUTED, wraplength=760)
+        self.insight.pack(anchor="w", pady=(12, 0))
+
+    def _build_footer(self, body: tk.Misc) -> None:
+        foot = tk.Frame(body, bg=theme.BG)
+        foot.pack(fill="x", pady=(theme.GAP_L, 0))
         tk.Frame(foot, height=1, bg=theme.BORDER).pack(fill="x", pady=(0, 10))
         self.total_label = label(foot, "", font=theme.FONT_UI_SMALL, fg=theme.TEXT_MUTED)
         self.total_label.pack(anchor="w")
-        self.assump_label = label(foot, "", font=theme.FONT_UI_TINY, fg=theme.TEXT_FAINT)
+        self.assump_label = label(foot, "", font=theme.FONT_UI_TINY,
+                                   fg=theme.TEXT_FAINT, wraplength=760)
         self.assump_label.pack(anchor="w", pady=(3, 0))
 
-        self.refresh()
+    # ---- data ------------------------------------------------------
 
     def refresh(self) -> None:
         self.week, self.total = stats_mod.week_and_total()
         w, t = self.week, self.total
 
-        value, unit = stats_mod.split_duration(w.saved_s)
-        self.hero_value.configure(text=value)
-        self.hero_unit.configure(text=unit)
-        if w.dictations and w.multiplier > 1:
-            self.hero_sub.configure(
-                text=f"Spreken ging {w.multiplier:.1f}× sneller dan typen.")
-        else:
-            self.hero_sub.configure(text="Nog geen dictaten deze week.")
+        saved_value, saved_unit = stats_mod.split_duration(w.saved_s)
+        self._set_cube("saved", f"{saved_value} {saved_unit}",
+                        f"{w.multiplier:.1f}x sneller dan typen" if w.multiplier > 1
+                        else "tegenover typen")
+        self._set_cube("dictations", str(w.dictations),
+                        f"gem. {w.avg_words:.0f} woorden" if w.dictations else "deze week")
+        self._set_cube("words", f"{w.words:,}".replace(",", "."), "uitgesproken")
+        self._set_cube("wpm", f"{round(w.speaking_wpm)} wpm",
+                        "gemeten" if w.measured_words else "geschat, nog niet gemeten")
+        self._set_cube("wait", stats_mod.format_ms(w.median_wait_ms),
+                        f"95e percentiel {stats_mod.format_ms(w.p95_wait_ms)}"
+                        if w.total_ms else "mediaan na loslaten")
+        self._set_cube("reliability", stats_mod.format_share(w.paste_share),
+                        "zonder omweg geplakt" if w.dictations else "nog geen data")
 
-        self.stat_cells["dictations"].configure(text=str(w.dictations))
-        self.stat_cells["words"].configure(text=f"{w.words:,}".replace(",", "."))
-        self.stat_cells["wpm"].configure(text=f"{round(w.speaking_wpm)} wpm")
-
+        self.latency_note.configure(text=self._latency_sentence(w))
         self.total_label.configure(
             text=f"Sinds het begin: {stats_mod.format_duration(t.saved_s)} bespaard "
                  f"over {t.dictations} dictaten en {t.words:,} woorden.".replace(",", "."))
         self.assump_label.configure(
             text=f"Aanname: typen op {stats_mod.TYPING_WPM:.0f} wpm. Spreektijd is gemeten "
-                 f"(inclusief wachten op de tekst); waar geen opnameduur bekend is, "
-                 f"gerekend aan {stats_mod.ASSUMED_SPEAKING_WPM:.0f} wpm.")
+                 f"inclusief wachten op de tekst; waar geen opnameduur bekend is, gerekend "
+                 f"aan {stats_mod.ASSUMED_SPEAKING_WPM:.0f} wpm. Wachttijden zijn medianen, "
+                 f"niet gemiddelden: een enkele netwerkhapering zou een gemiddelde "
+                 f"onbruikbaar maken.")
 
-        for child in self.apps_frame.winfo_children():
-            child.destroy()
-        apps = sorted(w.per_app.items(), key=lambda kv: kv[1], reverse=True)[:5]
-        if not apps:
-            label(self.apps_frame, "Nog niets deze week.",
-                   font=theme.FONT_UI_SMALL, fg=theme.TEXT_MUTED).pack(anchor="w")
-        peak = apps[0][1] if apps else 1.0
-        for name, saved in apps:
-            row = tk.Frame(self.apps_frame, bg=theme.BG)
-            row.pack(fill="x", pady=3)
-            label(row, name, font=theme.FONT_UI_SMALL, fg=theme.TEXT,
-                   width=20).pack(side="left")
-            value_lbl = label(row, stats_mod.format_duration(saved),
-                               font=theme.FONT_UI_SMALL, fg=theme.TEXT_MUTED, width=12)
-            value_lbl.configure(anchor="e")
-            value_lbl.pack(side="right")
-            bar = tk.Canvas(row, height=8, bg=theme.BG, highlightthickness=0, bd=0)
-            bar.pack(side="left", fill="x", expand=True, padx=(8, 12))
-            bar.bind("<Configure>",
-                      lambda e, b=bar, v=saved, p=peak: self._draw_app_bar(b, v, p))
-
+        self._fill_channels()
         self._draw_compare()
+        self._draw_latency()
         self._draw_chart()
+
+    def _set_cube(self, key: str, value: str, note: str) -> None:
+        value_label, note_label = self.cubes[key]
+        value_label.configure(text=value)
+        note_label.configure(text=note)
+
+    def _latency_sentence(self, w) -> str:
+        if not w.total_ms:
+            return "Nog geen metingen deze week."
+        return (f"Mediaan {stats_mod.format_ms(w.median_wait_ms)} tussen loslaten en tekst. "
+                f"Transcriptie {stats_mod.format_ms(w.median_stt_ms)}, "
+                f"opschonen {stats_mod.format_ms(w.median_cleanup_ms)}, "
+                f"de rest {stats_mod.format_ms(w.median_overhead_ms)}.")
+
+    def _fill_channels(self) -> None:
+        if self.week is None:
+            return
+        bucket = (self.week.per_app if self.channel_mode.get() == "app"
+                   else self.week.per_tone)
+        rows = sorted(bucket.values(), key=lambda c: c.saved_s, reverse=True)
+
+        self.channels.delete(*self.channels.get_children())
+        for i, c in enumerate(rows[:12]):
+            self.channels.insert(
+                "", "end",
+                values=(c.name, c.dictations, f"{c.words:,}".replace(",", "."),
+                        f"{c.avg_words:.0f} w",
+                        stats_mod.format_duration(c.saved_s, short=True),
+                        stats_mod.format_ms(c.median_wait_ms),
+                        stats_mod.format_share(c.cleaned_share)),
+                tags=("even" if i % 2 else "odd",))
+        self.insight.configure(text=self._insight(rows))
+
+    def _insight(self, rows: list) -> str:
+        """One concrete thing worth acting on, derived from the data rather
+        than from a fixed list of tips."""
+        if not rows:
+            return "Nog niets gedicteerd deze week."
+
+        w = self.week
+        slow = [c for c in rows if c.median_wait_ms and c.dictations >= 3]
+        if slow:
+            worst = max(slow, key=lambda c: c.median_wait_ms)
+            fastest = min(slow, key=lambda c: c.median_wait_ms)
+            if worst.median_wait_ms > fastest.median_wait_ms * 1.6:
+                return (f"{worst.name} wacht {stats_mod.format_ms(worst.median_wait_ms)} "
+                        f"tegen {stats_mod.format_ms(fastest.median_wait_ms)} bij "
+                        f"{fastest.name}. Dictaten zijn daar gemiddeld "
+                        f"{worst.avg_words:.0f} woorden tegen {fastest.avg_words:.0f}: "
+                        f"langere opnames kosten meer transcriptietijd.")
+
+        if w.paste_share < 0.9 and w.dictations >= 3:
+            return ("Niet alles belandt op de cursor. Kijk welke app het betreft: "
+                    "Microsoft Store-apps weigeren gesimuleerde toetsaanslagen, "
+                    "daar komt de tekst op het klembord terecht.")
+
+        if w.cleanup_failure_share > 0.1:
+            return (f"{stats_mod.format_share(w.cleanup_failure_share)} van het opschonen "
+                    f"mislukte; dan wordt de ruwe transcriptie geplakt. Meestal een "
+                    f"rate limit van de gratis tier.")
+
+        if w.avg_words and w.avg_words < 12:
+            return (f"Je dictaten zijn kort, gemiddeld {w.avg_words:.0f} woorden. "
+                    f"De vaste wachttijd per dictaat weegt dan zwaar; langere stukken "
+                    f"in één keer inspreken levert meer op.")
+
+        if w.median_stt_ms > 1500:
+            return (f"Transcriptie is met {stats_mod.format_ms(w.median_stt_ms)} het "
+                    f"grootste deel van de wachttijd. Die tijd valt pas na het loslaten, "
+                    f"omdat de audio nu in zijn geheel verstuurd wordt.")
+
+        return "Geen opvallende knelpunten deze week."
 
     # ---- drawing ---------------------------------------------------
 
-    def _draw_app_bar(self, bar: tk.Canvas, value: float, peak: float) -> None:
-        bar.delete("all")
-        w = bar.winfo_width() or 200
-        frac = (value / peak) if peak else 0.0
-        bar.create_polygon(theme.round_rect_points(0, 1, max(6, w * frac), 7, 3),
-                            smooth=True, fill=theme.ACCENT, outline="")
-
     def _draw_compare(self) -> None:
-        """Two bars on a shared scale: what typing would have cost, against
-        what speaking actually cost. The gap is the point of the screen."""
         if self.week is None:
             return
         c = self.compare
         c.delete("all")
         w = c.winfo_width() or 700
-        label_w, value_w = 168, 92
-        track_x0 = label_w
-        track_x1 = max(track_x0 + 40, w - value_w)
+        track_x0 = 168
+        track_x1 = max(track_x0 + 40, w - 92)
         track_w = track_x1 - track_x0
         peak = max(self.week.typing_s, self.week.speaking_s, 1.0)
-
         track_fill = theme.mix(theme.BG, theme.BORDER, 0.55)
+
         rows = (
             ("Typen", f"geschat op {stats_mod.TYPING_WPM:.0f} wpm",
              self.week.typing_s, theme.BORDER_STRONG, theme.TEXT_MUTED),
@@ -465,6 +587,42 @@ class ReportTab:
                 smooth=True, fill=color, outline="")
             c.create_text(w, y, text=stats_mod.format_duration(seconds), anchor="e",
                            fill=text_color, font=theme.FONT_UI_SMALL)
+
+    def _draw_latency(self) -> None:
+        """One stacked bar: transcription, cleanup, everything else."""
+        if self.week is None:
+            return
+        c = self.latency
+        c.delete("all")
+        w = c.winfo_width() or 700
+        total = self.week.median_wait_ms
+        if total <= 0:
+            c.create_text(0, 20, text="Nog geen metingen.", anchor="w",
+                           fill=theme.TEXT_FAINT, font=theme.FONT_UI_SMALL)
+            return
+
+        segments = (
+            ("Transcriptie", self.week.median_stt_ms, theme.ACCENT),
+            ("Opschonen", self.week.median_cleanup_ms, theme.ACCENT_SOFT),
+            ("Overig", self.week.median_overhead_ms, theme.BORDER_STRONG),
+        )
+        x, y, h = 0.0, 6.0, 18.0
+        for _, value, color in segments:
+            if value <= 0:
+                continue
+            seg_w = (value / total) * w
+            c.create_rectangle(x, y, x + seg_w, y + h, fill=color, outline="")
+            x += seg_w
+
+        legend_x = 0.0
+        for name, value, color in segments:
+            if value <= 0:
+                continue
+            c.create_oval(legend_x, 38, legend_x + 8, 46, fill=color, outline="")
+            text = f"{name} {stats_mod.format_ms(value)}"
+            c.create_text(legend_x + 13, 42, text=text, anchor="w",
+                           fill=theme.TEXT_MUTED, font=theme.FONT_UI_TINY)
+            legend_x += 13 + len(text) * 5.6 + 22
 
     def _draw_chart(self) -> None:
         if self.week is None:
@@ -492,8 +650,6 @@ class ReportTab:
             future = d > today
             if v:
                 bh = max(4.0, (v / peak) * max_h)
-                # Taller bars sit deeper in the blurple, so the week's peak
-                # reads instantly without needing to compare labels.
                 color = theme.mix(theme.ACCENT_SOFT, theme.ACCENT_DEEP, v / peak)
             else:
                 bh, color = 4.0, theme.BORDER
@@ -506,9 +662,291 @@ class ReportTab:
                                text=stats_mod.format_duration(v, short=True),
                                fill=theme.TEXT, font=theme.FONT_UI_TINY)
             c.create_text(cx, base_y + 15, text=self.DAY_NAMES[i],
-                           fill=theme.ACCENT_SOFT if d == today else
+                           fill=theme.ACCENT if d == today else
                                 (theme.TEXT_FAINT if future else theme.TEXT_MUTED),
                            font=theme.FONT_UI_TINY)
+
+
+class MeetingsTab:
+    """Record a meeting, then read back the notes and the transcript.
+
+    The transcript sits beside the notes rather than being thrown away: a
+    summary is an interpretation, and the only way to check one is against
+    what was actually said.
+    """
+
+    def __init__(self, parent: tk.Misc, controller):
+        self.frame = tk.Frame(parent, bg=theme.BG)
+        self.controller = controller       # the App, for start/stop
+        self._meetings: list = []
+        self._notes = ""
+        self._transcript = ""
+
+        bar = card(self.frame)
+        bar.pack(fill="x")
+        inner = tk.Frame(bar, bg=theme.SURFACE)
+        inner.pack(fill="x", padx=18, pady=14)
+
+        text_col = tk.Frame(inner, bg=theme.SURFACE)
+        text_col.pack(side="left", fill="x", expand=True)
+        self.status = label(text_col, "Klaar om op te nemen",
+                             font=theme.FONT_SECTION, bg=theme.SURFACE)
+        self.status.pack(anchor="w")
+        label(text_col,
+               "Ook zonder de app: houd Ctrl+Win vast en tik M.",
+               font=theme.FONT_UI_SMALL, fg=theme.TEXT_MUTED,
+               bg=theme.SURFACE).pack(anchor="w", pady=(3, 0))
+
+        self.record_button = ttk.Button(inner, text="Vergadering opnemen",
+                                         style="Accent.TButton",
+                                         command=self._toggle_recording)
+        self.record_button.pack(side="right")
+
+        split = tk.Frame(self.frame, bg=theme.BG)
+        split.pack(fill="both", expand=True, pady=(theme.GAP, 0))
+
+        left = tk.Frame(split, bg=theme.BG, width=230)
+        left.pack(side="left", fill="y")
+        left.pack_propagate(False)
+        caps(left, "Vergaderingen").pack(anchor="w", pady=(0, 6))
+        self.listing = ttk.Treeview(left, columns=("wanneer",), show="headings",
+                                     selectmode="browse")
+        self.listing.heading("wanneer", text="WANNEER", anchor="w")
+        self.listing.column("wanneer", width=210, anchor="w")
+        self.listing.pack(fill="both", expand=True)
+        self.listing.bind("<<TreeviewSelect>>", lambda e: self._show_selected())
+        self.listing.tag_configure("odd", background=theme.SURFACE)
+        self.listing.tag_configure("even", background=theme.SURFACE_ALT)
+
+        right = tk.Frame(split, bg=theme.BG)
+        right.pack(side="left", fill="both", expand=True, padx=(theme.GAP, 0))
+
+        head = tk.Frame(right, bg=theme.BG)
+        head.pack(fill="x", pady=(0, 6))
+        self.view_mode = tk.StringVar(value="notes")
+        for text, value in (("Notities", "notes"), ("Transcript", "transcript")):
+            ttk.Radiobutton(head, text=text, value=value, variable=self.view_mode,
+                             command=self._render).pack(side="left", padx=(0, 12))
+        ttk.Button(head, text="Verwijderen", command=self._delete).pack(side="right")
+        ttk.Button(head, text="Exporteren", command=self._export).pack(side="right", padx=8)
+
+        box = tk.Frame(right, bg=theme.BORDER)
+        box.pack(fill="both", expand=True)
+        self.view = tk.Text(box, wrap="word", font=theme.FONT_BODY,
+                             bg=theme.SURFACE, fg=theme.TEXT, relief="flat",
+                             padx=16, pady=14, bd=0,
+                             selectbackground=theme.ACCENT_WASH,
+                             selectforeground=theme.TEXT)
+        scroll = ttk.Scrollbar(box, orient="vertical", command=self.view.yview)
+        self.view.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        self.view.pack(side="left", fill="both", expand=True, padx=1, pady=1)
+        self.view.tag_configure("h1", font=("Segoe UI Semibold", 13),
+                                 spacing1=10, spacing3=6)
+        self.view.tag_configure("h2", font=("Segoe UI Semibold", 11),
+                                 foreground=theme.ACCENT, spacing1=14, spacing3=5)
+        self.view.tag_configure("bullet", lmargin1=18, lmargin2=32, spacing3=3)
+        self.view.tag_configure("speaker", foreground=theme.TEXT_FAINT)
+        self.view.tag_configure("muted", foreground=theme.TEXT_MUTED)
+        self.view.configure(state="disabled")
+
+        note_head = tk.Frame(right, bg=theme.BG)
+        note_head.pack(fill="x", pady=(theme.GAP, 4))
+        caps(note_head, "Jouw notities tijdens de vergadering").pack(side="left")
+        label(note_head, "worden achteraf aangevuld met het transcript",
+               font=theme.FONT_UI_TINY, fg=theme.TEXT_FAINT).pack(side="left", padx=(8, 0))
+
+        draft_box = tk.Frame(right, bg=theme.BORDER)
+        draft_box.pack(fill="x")
+        self.draft = tk.Text(draft_box, wrap="word", height=5, font=theme.FONT_BODY,
+                              bg=theme.SURFACE, fg=theme.TEXT, relief="flat",
+                              insertbackground=theme.TEXT, padx=16, pady=12, bd=0,
+                              selectbackground=theme.ACCENT_WASH,
+                              selectforeground=theme.TEXT)
+        self.draft.pack(fill="x", padx=1, pady=1)
+        self.draft.bind("<KeyRelease>", lambda e: self._sync_draft())
+
+        self.refresh()
+        self._tick()
+
+    def _sync_draft(self) -> None:
+        """Keep the controller's copy current: the meeting can also be
+        stopped from the tray or the keyboard, with this window closed."""
+        try:
+            self.controller.meeting_notes_draft = self.draft.get("1.0", "end").strip()
+        except Exception:
+            pass
+
+    # ---- recording -------------------------------------------------
+
+    def _toggle_recording(self) -> None:
+        if not self.controller.meeting_recorder.recording:
+            self._sync_draft()
+        self.controller.toggle_meeting()
+        if not self.controller.meeting_recorder.recording:
+            self.draft.delete("1.0", "end")
+
+    def _tick(self) -> None:
+        """Keep the button and status in step with the recorder, which can
+        also be driven from the tray or the keyboard."""
+        try:
+            recorder = self.controller.meeting_recorder
+            if recorder.recording:
+                elapsed = int(recorder.elapsed_s())
+                self.status.configure(
+                    text=f"Opname loopt  ·  {elapsed // 60}:{elapsed % 60:02d}")
+                self.record_button.configure(text="Stoppen en uitwerken")
+                self.draft.configure(state="normal")
+            else:
+                busy = getattr(self.controller, "meeting_busy", False)
+                self.status.configure(text="Bezig met uitwerken..." if busy
+                                       else "Klaar om op te nemen")
+                self.record_button.configure(text="Vergadering opnemen")
+        except Exception:
+            pass
+        finally:
+            self.frame.after(500, self._tick)
+
+    # ---- data ------------------------------------------------------
+
+    def refresh(self) -> None:
+        from . import meetings as meetings_mod
+
+        selected = self._selected_stamp()
+        self._meetings = meetings_mod.list_meetings()
+        self.listing.delete(*self.listing.get_children())
+        for i, m in enumerate(self._meetings):
+            self.listing.insert("", "end", iid=m.stamp, values=(m.label,),
+                                 tags=("even" if i % 2 else "odd",))
+
+        target = selected if selected in {m.stamp for m in self._meetings} else None
+        if target is None and self._meetings:
+            target = self._meetings[0].stamp
+        if target:
+            self.listing.selection_set(target)
+            self.listing.focus(target)
+        else:
+            self._notes = self._transcript = ""
+            self._render()
+
+    def _selected_stamp(self) -> str | None:
+        selection = self.listing.selection()
+        return selection[0] if selection else None
+
+    def _selected(self):
+        stamp = self._selected_stamp()
+        return next((m for m in self._meetings if m.stamp == stamp), None)
+
+    def _show_selected(self) -> None:
+        from . import meetings as meetings_mod
+
+        meeting = self._selected()
+        if meeting is None:
+            self._notes = self._transcript = ""
+        else:
+            self._notes, self._transcript = meetings_mod.read_meeting(meeting)
+        self._render()
+
+    # ---- rendering -------------------------------------------------
+
+    def _render(self) -> None:
+        showing_notes = self.view_mode.get() == "notes"
+        content = self._notes if showing_notes else self._transcript
+
+        self.view.configure(state="normal")
+        self.view.delete("1.0", "end")
+
+        if not content.strip():
+            self.view.insert("end",
+                              "Nog geen vergaderingen opgenomen."
+                              if not self._meetings else
+                              "Geen transcript bewaard bij deze vergadering.",
+                              "muted")
+        elif showing_notes:
+            self._render_markdown(content)
+        else:
+            self._render_transcript(content)
+        self.view.configure(state="disabled")
+
+    def _render_markdown(self, text: str) -> None:
+        """Just enough markdown for what write_notes produces."""
+        for raw in text.split("\n"):
+            line = raw.rstrip()
+            stripped = line.strip()
+            if stripped.startswith("## "):
+                self.view.insert("end", stripped[3:] + "\n", "h2")
+            elif stripped.startswith("# "):
+                self.view.insert("end", stripped[2:] + "\n", "h1")
+            elif stripped in ("---", "***"):
+                self.view.insert("end", "\n")
+            elif stripped.startswith(("- ", "* ")):
+                self.view.insert("end", "•  " + _strip_emphasis(stripped[2:]) + "\n",
+                                  "bullet")
+            else:
+                self.view.insert("end", _strip_emphasis(line) + "\n")
+
+    def _render_transcript(self, text: str) -> None:
+        for line in text.split("\n"):
+            speaker, sep, said = line.partition(": ")
+            if sep and len(speaker) < 40:
+                self.view.insert("end", speaker + ": ", "speaker")
+                self.view.insert("end", said + "\n")
+            else:
+                self.view.insert("end", line + "\n")
+
+    # ---- actions ---------------------------------------------------
+
+    def _export(self) -> None:
+        from tkinter import filedialog
+
+        from . import export as export_mod
+
+        meeting = self._selected()
+        if meeting is None or not self._notes.strip():
+            messagebox.showinfo("TalkWithMe", "Selecteer eerst een vergadering.",
+                                 parent=self.frame)
+            return
+
+        path = filedialog.asksaveasfilename(
+            parent=self.frame, title="Notities exporteren",
+            initialfile=f"vergadering_{meeting.stamp}",
+            defaultextension=".pdf",
+            filetypes=[(name, f"*{ext}") for name, ext in export_mod.FORMATS])
+        if not path:
+            return
+
+        markdown = self._notes
+        if self.view_mode.get() == "transcript" and self._transcript:
+            markdown = f"## Transcript\n\n{self._transcript}"
+        try:
+            export_mod.export(markdown, path, source_path=meeting.notes_path,
+                               title=f"Vergadering {meeting.label}")
+        except Exception as e:
+            log.exception("exporteren mislukt")
+            messagebox.showerror("TalkWithMe", f"Exporteren mislukt:\n{e}",
+                                  parent=self.frame)
+            return
+        import os
+        os.startfile(os.path.dirname(path))
+
+    def _delete(self) -> None:
+        from . import meetings as meetings_mod
+
+        meeting = self._selected()
+        if meeting is None:
+            return
+        if not messagebox.askyesno(
+                "TalkWithMe",
+                f"Vergadering van {meeting.label} verwijderen?\n"
+                f"De opname en de notities gaan allebei weg.",
+                parent=self.frame):
+            return
+        meetings_mod.delete_meeting(meeting)
+        self.refresh()
+
+
+def _strip_emphasis(text: str) -> str:
+    return text.replace("**", "").replace("`", "")
 
 
 # ----------------------------------------------------------------------
