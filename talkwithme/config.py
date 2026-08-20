@@ -22,7 +22,7 @@ DEFAULTS = {
     "stt_model": "scribe_v2",
     "cleanup_model": "gemini-flash-lite-latest",
     "cleanup_enabled": True,
-    "update_repo": "mathiasdaeseleire-bit/TalktoMathi",          # bv. "mathias/talkwithme"; leeg = niet controleren
+    "update_repo": "mathiasdaeseleire-bit/TalkwithMe",          # bv. "mathias/talkwithme"; leeg = niet controleren
     "update_check_enabled": True,
     "cleanup_instructions": prompts.DEFAULT_CLEANUP,
     # Adapt tone to the app being typed into (chat vs email vs terminal).
