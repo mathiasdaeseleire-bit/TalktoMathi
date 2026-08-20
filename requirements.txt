@@ -1,0 +1,10 @@
+pywin32
+sounddevice
+numpy
+pyyaml
+keyring
+pystray
+Pillow
+winotify
+psutil
+google-genai

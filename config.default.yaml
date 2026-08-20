@@ -1,0 +1,46 @@
+trigger: ctrl_win              # of: ctrl_alt | right_ctrl | f13
+mode: toggle                   # toggle | hold (alleen toggle is in deze versie gebouwd)
+max_duration_s: 300
+silence_stop_s: 3              # automatisch stoppen bij stilte; null = uit
+language: auto                 # auto | nl | en — expliciet is accurater
+
+stt_model: gemini-flash-lite-latest    # spraak-naar-tekst — Gemini (gratis tier)
+polish_model: gemini-flash-lite-latest # oppoetsen naar toon — ook Gemini (gratis tier)
+# "-latest" aliassen i.p.v. een vast versienummer: Google deprecate modellen (zoals
+# gemini-2.5-flash, geweigerd voor nieuwe gebruikers per aug 2026) sneller dan dit
+# bestand bijgehouden wordt. Vermijd "gemini-flash-latest" (zonder -lite): dat is een
+# "thinking"-model dat tokens aan intern redeneren verbrandt voor het ook maar iets
+# uitvoert — te traag voor het <1,2s dictatiebudget.
+
+polish:
+  enabled: true
+  skip_under_words: 4
+
+# Toon per app. Exe-naam (kleine letters) -> toon.
+tones:
+  whatsapp.exe:        chat
+  slack.exe:            chat
+  ms-teams.exe:         chat
+  claude.exe:            prompt
+  cursor.exe:            prompt
+  code.exe:              prompt
+  outlook.exe:            email
+  olk.exe:                email        # nieuwe Outlook
+  windowsterminal.exe:    verbatim
+  powershell.exe:         verbatim
+  cmd.exe:                verbatim
+
+# Browsers: de venstertitel bepaalt de toon
+title_tones:
+  "WhatsApp":  chat
+  "Gmail":     email
+  "Outlook":   email
+  "Claude":    prompt
+  "ChatGPT":   prompt
+  "Slack":     chat
+
+# Apps waar Ctrl+V niet werkt maar Ctrl+Shift+V wel
+paste_keys:
+  windowsterminal.exe: ctrl+shift+v
+
+apps_disabled: []              # exe-namen waar de trigger uit moet

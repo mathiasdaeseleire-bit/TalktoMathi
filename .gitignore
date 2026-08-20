@@ -1,0 +1,26 @@
+# Build output
+build/
+dist/
+*.spec.bak
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Local key files (should never exist, but never commit one by accident)
+*key*.txt
+*.pem
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# Lokale Claude Code-instellingen (bevat machinepaden)
+.claude/settings.local.json
+
+# Dev-artefacten
+scripts/icon_preview.png
