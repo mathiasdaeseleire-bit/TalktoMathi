@@ -3,6 +3,30 @@
 Versienummers volgen de tag van de GitHub-release. De app vergelijkt de
 nieuwste tag met `__version__` in `talkwithme/__init__.py`.
 
+## 0.4.0
+
+**Streaming transcriptie.** De audio wordt nu verstuurd terwijl je praat in
+plaats van erna. Bij het loslaten rest alleen nog de staart: gemeten ging
+de transcriptie van ongeveer 2,7 seconden naar 0,8. Valt de verbinding weg,
+dan gebruikt de app gewoon de oude route met de bewaarde opname, dus een
+haperend netwerk kost je nooit een dictaat.
+
+- Bij een vergadering loopt het transcript live mee in het tabblad, en zijn
+  de notities meteen klaar in plaats van na het uploaden van een uur audio.
+- Uit te zetten met `realtime_enabled` in de config.
+
+**Een dode microfoon wordt herkend.** Komt een opname helemaal stil terug,
+dan zegt de app dat, met de meest waarschijnlijke oorzaak eerst: de
+mute-toets op je toetsenbord. Twee stille dictaten op rij geven een venster
+met het volledige stappenplan. Voorheen meldde de app "geen spraak herkend"
+en wees daarmee naar de spreker terwijl de microfoon uitstond.
+
+**Opgelost: blanco pictogram op de taakbalk.** Werd de app geïnstalleerd
+vanuit een verpakte (MSIX) omgeving, dan legde Windows de bestanden in een
+container en verwees de snelkoppeling naar een pad dat daarbuiten niet
+bestaat. Het installatiepad wordt nu uit het gebruikersprofiel opgebouwd in
+plaats van uit de omgevingsvariabele.
+
 ## 0.3.0
 
 **Vergadernotities.** Ctrl+Win+M, of de knop in het nieuwe tabblad

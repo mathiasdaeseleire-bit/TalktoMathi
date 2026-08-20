@@ -53,6 +53,9 @@ class Recorder:
         self.recording_start_ts = 0.0
         self.stream: sd.InputStream | None = None
         self.using_fallback_device = False
+        # Optional live consumer (streaming transcription). Called from the
+        # audio callback, so it must only queue work, never block.
+        self.on_audio = None
         # Recent per-block RMS, read by the on-screen waveform indicator.
         self.levels: collections.deque[float] = collections.deque(maxlen=48)
 
@@ -114,6 +117,12 @@ class Recorder:
     def _cb(self, indata, frames, time_info, status):
         mono = indata[:, 0]
         self.chunks.append(mono.copy())
+        consumer = self.on_audio
+        if consumer is not None:
+            try:
+                consumer(mono, self.rate)
+            except Exception:
+                pass
         n = len(mono)
         rms = float(np.sqrt(np.mean(mono.astype(np.float64) ** 2))) if n else 0.0
         self.levels.append(rms)

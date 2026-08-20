@@ -29,6 +29,7 @@ from . import paste
 from . import meetings as meetings_mod
 from . import permissions
 from . import postprocess
+from . import realtime as realtime_mod
 from . import secrets_store
 from . import single_instance
 from . import tones as tones_mod
@@ -47,6 +48,26 @@ MONITOR_INTERVAL_S = 0.2
 PREWARM_IDLE_S = 60.0
 MIN_RECORDING_S = 0.3
 SILENT_PEAK = 40        # int16; below this the mic gave us nothing
+SILENT_STREAK_ALARM = 2  # silent recordings in a row before we blame the device
+
+MIC_DEAD_MESSAGE = (
+    "Er komt geen geluid uit je microfoon.\n"
+    "\n"
+    "Twee dictaten op rij kwamen leeg terug. Loop dit na, in deze volgorde:\n"
+    "\n"
+    "  1. Staat je microfoon gedempt? Veel laptops hebben daar een toets\n"
+    "     voor, vaak F4 of F8, soms met een lampje erin. Dit is veruit de\n"
+    "     meest voorkomende oorzaak.\n"
+    "\n"
+    "  2. Windows-instellingen > Systeem > Geluid > Invoer: beweegt de\n"
+    "     balk als je praat?\n"
+    "\n"
+    "  3. Zo niet, dan hangt de audiodienst. Rechtsklik Start, kies\n"
+    "     'Terminal (beheerder)' en voer uit:\n"
+    "     Restart-Service -Name Audiosrv -Force\n"
+    "\n"
+    "Je opnames en instellingen blijven in alle gevallen staan."
+)
 
 
 class App:
@@ -66,6 +87,11 @@ class App:
         # Notes typed while the meeting runs; the write-up expands these
         # instead of summarising from scratch (see meetings.build_prompt).
         self.meeting_notes_draft = ""
+        self.stream_session = None
+        # Consecutive dictations that came back as pure silence. Two in a
+        # row is a broken microphone, not a quiet user, and it is worth
+        # saying so with the fix attached.
+        self._silent_streak = 0
         self._build_clients()
 
         self.root = tk.Tk()
@@ -297,8 +323,10 @@ class App:
             notify.notify("TalkWithMe", f"Microfoon niet beschikbaar: {e}")
             self._set_state("idle")
             return
+        self._start_streaming()
         self._set_state("recording")
-        log.info("opname gestart (exe=%s, toon=%s)", self.ctx_exe, self.ctx_tone)
+        log.info("opname gestart (exe=%s, toon=%s, streaming=%s)",
+                  self.ctx_exe, self.ctx_tone, self.stream_session is not None)
 
     def _on_cancel(self) -> None:
         with self._state_lock:
@@ -316,6 +344,10 @@ class App:
         elapsed = self.recorder.recording_elapsed_s()
         audio = self.recorder.stop()
         if elapsed < MIN_RECORDING_S or audio is None or len(audio) == 0:
+            session, self.stream_session = self.stream_session, None
+            self.recorder.on_audio = None
+            if session is not None:
+                session.close()
             log.info("te korte opname (%.2fs), genegeerd", elapsed)
             self._set_state("idle")
             return
@@ -323,7 +355,58 @@ class App:
         try:
             self._process(audio, t0)
         finally:
+            # Whatever path _process took, the socket must not be left open.
+            session, self.stream_session = self.stream_session, None
+            self.recorder.on_audio = None
+            if session is not None:
+                session.close()
             self._set_state("idle")
+
+
+    # ---- streaming transcription -----------------------------------
+
+    def _start_streaming(self) -> None:
+        """Transcribe while the user is still speaking.
+
+        Connecting costs a moment, but it happens at key-down, hidden
+        behind the speech itself. If anything goes wrong the recording is
+        untouched and the batch endpoint still runs at the end, so this
+        can only make things faster, never lossy.
+        """
+        self.stream_session = None
+        if not self.config.realtime_enabled:
+            return
+        key = secrets_store.get_elevenlabs_api_key()
+        if not key:
+            return
+        try:
+            session = realtime_mod.StreamingTranscriber(
+                key, language=self.config.language, commit_strategy="vad")
+            session.start()
+        except Exception as e:
+            log.info("streaming niet beschikbaar, batch wordt gebruikt: %s", e)
+            return
+        self.stream_session = session
+        self.recorder.on_audio = session.feed
+
+    def _finish_streaming(self) -> tuple[str, int]:
+        """Returns (text, ms). Empty text means: fall back to batch."""
+        session, self.stream_session = self.stream_session, None
+        self.recorder.on_audio = None
+        if session is None:
+            return "", 0
+        started = time.monotonic()
+        try:
+            text = session.finish()
+        except Exception as e:
+            log.warning("streaming afronden mislukt: %s", e)
+            session.close()
+            return "", 0
+        elapsed = int((time.monotonic() - started) * 1000)
+        if session.failed:
+            log.warning("streaming eindigde met een fout: %s", session.failed)
+            return "", elapsed
+        return text.strip(), elapsed
 
     # ---- pipeline --------------------------------------------------
 
@@ -341,24 +424,39 @@ class App:
         # it on "geen spraak herkend", which points at the wrong thing.
         peak = int(np.max(np.abs(audio))) if len(audio) else 0
         if peak < SILENT_PEAK:
-            log.warning("opname is stil (piek=%d, terugvalapparaat=%s)",
-                         peak, self.recorder.using_fallback_device)
-            if self.recorder.using_fallback_device:
+            self._silent_streak += 1
+            log.warning("opname is stil (piek=%d, terugvalapparaat=%s, op rij=%d)",
+                         peak, self.recorder.using_fallback_device, self._silent_streak)
+            if self._silent_streak >= SILENT_STREAK_ALARM:
+                # Windows sometimes wedges an audio device: it opens without
+                # complaint and then delivers nothing at all. Only a restart
+                # of the audio service or the machine clears it, so say that
+                # instead of letting the user keep dictating into a void.
+                self._ui_queue.put(("update_msg", MIC_DEAD_MESSAGE))
+                self._silent_streak = 0
+            elif self.recorder.using_fallback_device:
                 notify.notify("TalkWithMe",
                                "Je microfoon was even bezet, er is niets opgenomen. "
                                "Probeer het zo opnieuw.")
             else:
                 notify.notify("TalkWithMe",
-                               "Er kwam geen geluid binnen. Staat de juiste microfoon "
-                               "ingesteld en niet gedempt?")
+                               "Er kwam geen geluid binnen. Staat je microfoon "
+                               "gedempt? Kijk naar de mute-toets op je toetsenbord.")
             return
 
-        try:
-            raw_text, stt_ms = self.stt.transcribe(audio, self.recorder.rate)
-        except SttError as e:
-            log.warning("STT mislukt: %s", e)
-            notify.notify("TalkWithMe", f"Spraakherkenning mislukt: {e}")
-            return
+        self._silent_streak = 0
+
+        # The streamed transcript is already waiting; the batch endpoint is
+        # only paid for when streaming produced nothing.
+        raw_text, stt_ms = self._finish_streaming()
+        used_streaming = bool(raw_text)
+        if not used_streaming:
+            try:
+                raw_text, stt_ms = self.stt.transcribe(audio, self.recorder.rate)
+            except SttError as e:
+                log.warning("STT mislukt: %s", e)
+                notify.notify("TalkWithMe", f"Spraakherkenning mislukt: {e}")
+                return
 
         if not raw_text:
             log.info("geen spraak herkend")
@@ -387,8 +485,9 @@ class App:
         final_text = postprocess.finish(final_text, tone or "default")
 
         total_ms = int((time.monotonic() - t0) * 1000)
-        log.info("klaar: stt_ms=%d cleanup_ms=%d total_ms=%d cleaned=%s toon=%s",
-                  stt_ms, cleanup_ms, total_ms, cleaned_applied, tone or "—")
+        log.info("klaar: stt_ms=%d cleanup_ms=%d total_ms=%d cleaned=%s toon=%s stream=%s",
+                  stt_ms, cleanup_ms, total_ms, cleaned_applied, tone or "—",
+                  used_streaming)
         log.info("tekst: %r", final_text)
 
         delivery = self._deliver(final_text)
@@ -437,6 +536,21 @@ class App:
         if self.meeting_recorder.recording:
             self._finish_meeting()
             return
+        # Live transcription: the meeting is transcribed while it runs, so
+        # the notes are ready when it ends instead of after an upload of an
+        # hour of audio. The WAV is still written, so a dropped connection
+        # falls back to the batch endpoint.
+        key = secrets_store.get_elevenlabs_api_key()
+        self.meeting_recorder.transcriber = None
+        if key and self.config.realtime_enabled:
+            try:
+                streamer = realtime_mod.StreamingTranscriber(
+                    key, language=self.config.language, commit_strategy="vad")
+                streamer.start()
+                self.meeting_recorder.transcriber = streamer
+            except Exception as e:
+                log.info("live transcriptie niet beschikbaar: %s", e)
+
         try:
             self.meeting_recorder.start()
         except Exception as e:
@@ -462,6 +576,10 @@ class App:
         if meeting is None:
             return
         if meeting.duration_s < 10:
+            streamer = self.meeting_recorder.transcriber
+            self.meeting_recorder.transcriber = None
+            if streamer is not None:
+                streamer.close()
             notify.notify("TalkWithMe", "Opname te kort, niets uitgewerkt.")
             return
 
@@ -481,8 +599,23 @@ class App:
                 key = secrets_store.get_elevenlabs_api_key()
                 if not key:
                     raise RuntimeError("geen ElevenLabs-key ingesteld")
-                transcript, _ = meetings.transcribe(
-                    meeting, key, self.config.stt_model, self.config.language)
+                transcript = ""
+                streamer = self.meeting_recorder.transcriber
+                self.meeting_recorder.transcriber = None
+                if streamer is not None:
+                    try:
+                        transcript = streamer.finish(timeout_s=8.0).strip()
+                    except Exception as e:
+                        log.warning("live transcript afronden mislukt: %s", e)
+                        streamer.close()
+
+                if transcript:
+                    log.info("live transcript gebruikt (%d tekens)", len(transcript))
+                else:
+                    # Nothing streamed back: fall back to uploading the file,
+                    # which also gets us speaker labels.
+                    transcript, _ = meetings.transcribe(
+                        meeting, key, self.config.stt_model, self.config.language)
                 if not transcript.strip():
                     raise RuntimeError("geen spraak herkend in de opname")
 

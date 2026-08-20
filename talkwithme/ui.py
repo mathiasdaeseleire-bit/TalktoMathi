@@ -769,6 +769,23 @@ class MeetingsTab:
         self.refresh()
         self._tick()
 
+    def _show_live_transcript(self, recorder) -> None:
+        """While recording, the pane shows the transcript as it arrives —
+        the reason for streaming is that you can watch it happen."""
+        streamer = getattr(recorder, "transcriber", None)
+        if streamer is None:
+            return
+        text = streamer.live_text
+        if text == getattr(self, "_last_live", None):
+            return
+        self._last_live = text
+        self.view_mode.set("transcript")
+        self.view.configure(state="normal")
+        self.view.delete("1.0", "end")
+        self.view.insert("end", text or "Luistert mee...", "" if text else "muted")
+        self.view.see("end")
+        self.view.configure(state="disabled")
+
     def _sync_draft(self) -> None:
         """Keep the controller's copy current: the meeting can also be
         stopped from the tray or the keyboard, with this window closed."""
@@ -793,10 +810,12 @@ class MeetingsTab:
             recorder = self.controller.meeting_recorder
             if recorder.recording:
                 elapsed = int(recorder.elapsed_s())
+                sources = "jij en de anderen" if recorder.system_audio else "alleen je microfoon"
                 self.status.configure(
-                    text=f"Opname loopt  ·  {elapsed // 60}:{elapsed % 60:02d}")
+                    text=f"Opname loopt  ·  {elapsed // 60}:{elapsed % 60:02d}  ·  {sources}")
                 self.record_button.configure(text="Stoppen en uitwerken")
                 self.draft.configure(state="normal")
+                self._show_live_transcript(recorder)
             else:
                 busy = getattr(self.controller, "meeting_busy", False)
                 self.status.configure(text="Bezig met uitwerken..." if busy

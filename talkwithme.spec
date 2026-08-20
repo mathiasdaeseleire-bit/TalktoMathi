@@ -13,6 +13,7 @@ a = Analysis(
         "pystray._win32",
         "keyring.backends.Windows",
         "win32com.client",
+        "websocket",
         "docx",
         "reportlab.graphics.barcode.code128",
     ],

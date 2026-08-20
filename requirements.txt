@@ -8,6 +8,7 @@ Pillow
 winotify
 psutil
 httpx
+websocket-client
 google-genai
 python-docx
 reportlab

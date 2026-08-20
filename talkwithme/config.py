@@ -22,6 +22,8 @@ DEFAULTS = {
     "stt_model": "scribe_v2",
     "cleanup_model": "gemini-flash-lite-latest",
     "cleanup_enabled": True,
+    # Stream audio while speaking instead of uploading it afterwards.
+    "realtime_enabled": True,
     "update_repo": "mathiasdaeseleire-bit/TalkwithMe",          # bv. "mathias/talkwithme"; leeg = niet controleren
     "update_check_enabled": True,
     "cleanup_instructions": prompts.DEFAULT_CLEANUP,
@@ -43,6 +45,7 @@ class Config:
     stt_model: str = DEFAULTS["stt_model"]
     cleanup_model: str = DEFAULTS["cleanup_model"]
     cleanup_enabled: bool = DEFAULTS["cleanup_enabled"]
+    realtime_enabled: bool = DEFAULTS["realtime_enabled"]
     update_repo: str = DEFAULTS["update_repo"]
     update_check_enabled: bool = DEFAULTS["update_check_enabled"]
     cleanup_instructions: str = DEFAULTS["cleanup_instructions"]
@@ -70,6 +73,7 @@ class Config:
             "stt_model": self.stt_model,
             "cleanup_model": self.cleanup_model,
             "cleanup_enabled": self.cleanup_enabled,
+            "realtime_enabled": self.realtime_enabled,
             "update_repo": self.update_repo,
             "update_check_enabled": self.update_check_enabled,
             "cleanup_instructions": self.cleanup_instructions,
@@ -111,6 +115,7 @@ def load_config() -> Config:
         stt_model=merged["stt_model"],
         cleanup_model=merged["cleanup_model"],
         cleanup_enabled=bool(merged["cleanup_enabled"]),
+        realtime_enabled=bool(merged.get("realtime_enabled", True)),
         update_repo=str(merged.get("update_repo") or "").strip(),
         update_check_enabled=bool(merged.get("update_check_enabled", True)),
         cleanup_instructions=merged["cleanup_instructions"] or prompts.DEFAULT_CLEANUP,

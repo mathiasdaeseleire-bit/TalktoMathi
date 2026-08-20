@@ -18,7 +18,8 @@ afgestemd op de app waarin je typt.
 
 1. Een low-level keyboard hook vangt Ctrl+Win als *hold-to-talk*.
 2. De opname start bij indrukken en stopt bij loslaten.
-3. De audio gaat naar **ElevenLabs Scribe v2** voor de transcriptie.
+3. De audio stroomt naar **ElevenLabs Scribe v2 Realtime** terwijl je nog
+   praat, zodat de transcriptie bij het loslaten al grotendeels klaar is.
 4. Het ruwe transcript gaat naar **Gemini Flash** om vullers, valse starts en
    zelfcorrecties te verwijderen.
 5. De tekst wordt op je cursor geplakt.

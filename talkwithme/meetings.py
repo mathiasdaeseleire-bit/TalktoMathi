@@ -102,6 +102,7 @@ class _Source:
         self.device = device
         self.rate = rate
         self.chunks: list[np.ndarray] = []
+        self.stream_pos = 0       # how far the live transcriber has consumed
         self.peak = 0
         self.stream: sd.InputStream | None = None
         self._lock = threading.Lock()
@@ -224,6 +225,12 @@ class MeetingRecorder:
         self.recording = False
         self.started_at: datetime | None = None
         self.system_audio = False
+        # Live transcription, fed by a pump thread rather than from the
+        # audio callbacks: two sources have to be mixed before they can be
+        # sent as one stream, and that is not callback work.
+        self.transcriber = None
+        self._pump: threading.Thread | None = None
+        self._pump_stop = threading.Event()
         self.level = 0.0
         self.rate = RATE
         self._sources: list[_Source] = []
@@ -277,6 +284,11 @@ class MeetingRecorder:
         self._sources = sources
         self._start_monotonic = time.monotonic()
         self.recording = True
+        if self.transcriber is not None:
+            self._pump_stop.clear()
+            self._pump = threading.Thread(target=self._pump_loop,
+                                           name="meeting-stream", daemon=True)
+            self._pump.start()
         log.info("vergaderopname gestart: %s (%d bron(nen))", self._path, len(sources))
         return self._path
 
@@ -285,11 +297,47 @@ class MeetingRecorder:
             return 0.0
         return time.monotonic() - self._start_monotonic
 
+    def _drain(self) -> np.ndarray:
+        """Take everything captured since the last pass, mixed into one
+        track at the recorder's rate."""
+        tracks = []
+        for source in self._sources:
+            with source._lock:
+                pending = source.chunks[source.stream_pos:]
+                source.stream_pos = len(source.chunks)
+            if not pending:
+                continue
+            audio = np.concatenate(pending)
+            tracks.append(_resample(audio, source.rate, self.rate))
+        return mix(tracks, self.rate)
+
+    def _pump_loop(self) -> None:
+        while not self._pump_stop.is_set():
+            time.sleep(0.25)
+            try:
+                chunk = self._drain()
+                if len(chunk) and self.transcriber is not None:
+                    self.transcriber.feed(chunk, self.rate)
+            except Exception as e:
+                log.debug("live transcriptie overslaan: %s", e)
+
     def stop(self) -> Meeting | None:
         if not self.recording:
             return None
         self.recording = False
         duration = self.elapsed_s()
+
+        self._pump_stop.set()
+        if self._pump is not None:
+            self._pump.join(timeout=1.0)
+            self._pump = None
+        try:
+            if self.transcriber is not None:
+                leftover = self._drain()
+                if len(leftover):
+                    self.transcriber.feed(leftover, self.rate)
+        except Exception:
+            pass
 
         tracks: list[np.ndarray] = []
         for source in self._sources:

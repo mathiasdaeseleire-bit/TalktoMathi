@@ -19,8 +19,23 @@ from .icon import save_ico
 log = logging.getLogger("talkwithme.install")
 
 APP_NAME = "TalkWithMe"
-INSTALL_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
-                            "Programs", APP_NAME)
+def _local_appdata() -> str:
+    bs = chr(92)
+    r"""The user's real AppData\\Local.
+
+    Running inside a packaged (MSIX) host redirects writes to
+    ...\Packages\<app>\LocalCache\Local, and a shortcut created there
+    records that path. It resolves for the packaged process and for nobody
+    else, so a pinned icon ends up blank. Building the path from the user
+    profile avoids inheriting that redirection.
+    """
+    from_env = os.environ.get("LOCALAPPDATA", "")
+    if from_env and (bs + "Packages" + bs) not in from_env:
+        return from_env
+    return os.path.join(os.path.expanduser("~"), "AppData", "Local")
+
+
+INSTALL_DIR = os.path.join(_local_appdata(), "Programs", APP_NAME)
 INSTALLED_EXE = os.path.join(INSTALL_DIR, f"{APP_NAME}.exe")
 ICON_PATH = os.path.join(INSTALL_DIR, f"{APP_NAME}.ico")
 START_MENU_DIR = os.path.join(os.environ.get("APPDATA", ""),
